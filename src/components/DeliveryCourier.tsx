@@ -17,12 +17,15 @@ export default function DeliveryCourier({ me, toast }: { me: api.Me; toast: (m: 
   const [start, setStart] = useState({ location: "", department: "Post-Analytical", signature: "" });
   const [code, setCode] = useState("");
   const [active, setActive] = useState<api.ReportDelivery | null>(null);
+  const [waiting, setWaiting] = useState<api.ReportRelease[]>([]);
+  const [picked, setPicked] = useState<Record<string, boolean>>({});
+  const [showOther, setShowOther] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
     try {
-      const [d, c] = await Promise.all([api.loadDeliveries(14, me.email), api.loadCentres().catch(() => [])]);
-      setSheets(d.sheets); setRows(d.rows); setCentres(c.filter((x) => x.active));
+      const [d, c, w] = await Promise.all([api.loadDeliveries(14, me.email), api.loadCentres().catch(() => []), api.loadWaitingReleases().catch(() => [])]);
+      setSheets(d.sheets); setRows(d.rows); setCentres(c.filter((x) => x.active)); setWaiting(w);
     } catch (e: any) { toast(e.message, "err"); }
     finally { setLoading(false); }
   }, [me.email, toast]);
@@ -47,9 +50,14 @@ export default function DeliveryCourier({ me, toast }: { me: api.Me; toast: (m: 
       const res = await api.addReports(sheet.id, codes);
       const added = res.filter((r) => r.result === "added").length;
       const issues = res.filter((r) => r.result !== "added").map((r) =>
-        r.result === "no_r_number" ? `"${r.code}" has no R# number` : r.result === "already_on_this_sheet" ? `R#${r.r_number} is already on this sheet` : `R#${r.r_number} is already out for delivery on another sheet`);
+        r.result === "no_r_number" ? `"${r.code}" has no R# number.`
+        : r.result === "not_released" ? `R#${r.r_number} hasn't been released by post-analytical: hand it back.`
+        : r.result === "already_on_this_sheet" ? `R#${r.r_number} is already on this sheet.` : `R#${r.r_number} is already out for delivery on another sheet.`);
+      const otherDest = res.filter((r) => r.result === "added" && r.other_destination).map((r) => `R#${r.r_number} was released for ${r.destination}.`);
+      issues.push(...otherDest);
       toast([added ? `${added} report${added === 1 ? "" : "s"} added.` : "", ...issues].filter(Boolean).join(" "), issues.length && !added ? "err" : "ok");
       setCode("");
+      setPicked({});
       await load();
     } catch (e: any) { toast(e.message, "err"); } finally { setBusy(null); }
   }
@@ -83,7 +91,7 @@ export default function DeliveryCourier({ me, toast }: { me: api.Me; toast: (m: 
       {!sheet && (
         <>
           <h1 className="text-2xl font-semibold text-ink mb-1">Deliver reports</h1>
-          <p className="text-ink-2 mb-4">Start a delivery sheet when you collect reports from the lab.</p>
+          <p className="text-ink-2 mb-4">Start a delivery sheet when you collect reports from the lab. Only reports released by post-analytical can be picked up.</p>
           <Field label="Delivery location">
             <input className={inputCls} list="delivery-locations" value={start.location} placeholder="e.g. Tema"
               onChange={(e) => setStart({ ...start, location: e.target.value })} />
@@ -103,10 +111,48 @@ export default function DeliveryCourier({ me, toast }: { me: api.Me; toast: (m: 
             <p className="text-sm text-ink-2">Picked up {fmtTime(sheet.started_at)}. {sheetRows.length} report{sheetRows.length === 1 ? "" : "s"}, {pending} still to deliver.</p>
           </div>
 
+          {(() => {
+            const here = waiting.filter((w) => w.destination.trim().toLowerCase() === sheet.location.trim().toLowerCase());
+            const elsewhere = waiting.filter((w) => !here.includes(w));
+            const chosen = Object.keys(picked).filter((k) => picked[k]);
+            const row = (w: api.ReportRelease) => (
+              <li key={w.id}>
+                <label className="flex items-center gap-3 px-4 py-3 cursor-pointer border-b" style={{ borderColor: C.line }}>
+                  <input type="checkbox" className="w-6 h-6 accent-[var(--accent)]" checked={!!picked[w.r_number]}
+                    onChange={(e) => setPicked({ ...picked, [w.r_number]: e.target.checked })} />
+                  <span className="min-w-0">
+                    <span className="num text-lg text-ink">R#{w.r_number}</span>
+                    <span className="block text-sm text-ink-2">{w.client_name || ""}{w.destination.toLowerCase() !== sheet.location.toLowerCase() ? ` (for ${w.destination})` : ""}</span>
+                  </span>
+                </label>
+              </li>
+            );
+            return (
+              <div className="card mb-4 overflow-hidden">
+                <div className="px-4 py-3 border-b" style={{ borderColor: C.line, background: C.raised }}>
+                  <p className="font-semibold text-ink">Ready for you to collect</p>
+                  <p className="text-sm text-ink-2">{here.length ? `${here.length} report${here.length === 1 ? "" : "s"} released for ${sheet.location}. Tick the ones you have in hand, or scan them below.` : `No reports released for ${sheet.location} right now.`}</p>
+                </div>
+                <ul>{here.map(row)}</ul>
+                {elsewhere.length > 0 && (
+                  <div className="px-4 py-2">
+                    <button className="text-sm text-accent underline cursor-pointer" onClick={() => setShowOther(!showOther)}>
+                      {showOther ? "Hide" : "Show"} {elsewhere.length} report{elsewhere.length === 1 ? "" : "s"} released for other places
+                    </button>
+                  </div>
+                )}
+                {showOther && <ul>{elsewhere.map(row)}</ul>}
+                {chosen.length > 0 && (
+                  <div className="p-3"><Button tone="primary" className="w-full py-3" disabled={!!busy} onClick={() => add(chosen)}>Pick up {chosen.length} report{chosen.length === 1 ? "" : "s"}</Button></div>
+                )}
+              </div>
+            );
+          })()}
+
           <input ref={fileRef} type="file" accept="image/*" capture="environment" className="sr-only" id="report-photo"
             onChange={(e) => onPhoto(e.target.files?.[0])} />
           <label htmlFor="report-photo" className={`flex items-center justify-center w-full rounded-xl py-5 text-lg font-semibold cursor-pointer mb-2 ${busy ? "opacity-60 pointer-events-none" : ""}`}
-            style={{ background: C.accent, color: "var(--accent-ink)" }}>{busy || "Scan report barcodes (photo)"}</label>
+            style={{ background: C.accent, color: "var(--accent-ink)" }}>{busy || "Or scan report barcodes (photo)"}</label>
           <div className="flex gap-2 mb-5">
             <input className={inputCls} inputMode="numeric" placeholder="Or type the R# number" value={code}
               onChange={(e) => setCode(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && code.trim()) add([code.trim()]); }} />

@@ -274,7 +274,8 @@ export const startDeliverySheet = (location: string, department: string, signatu
   call(client().rpc("delivery_start_sheet", { p_location: location, p_department: department, p_courier_signature: signature }), "Starting sheet") as Promise<number>;
 export const addReports = (sheetId: number, codes: string[]) =>
   call(client().rpc("delivery_add_reports", { p_sheet_id: sheetId, p_codes: codes }), "Adding reports") as
-    Promise<{ code: string; r_number?: string; result: "added" | "already_on_this_sheet" | "already_out_for_delivery" | "no_r_number"; client_name?: string | null }[]>;
+    Promise<{ code: string; r_number?: string; result: "added" | "already_on_this_sheet" | "already_out_for_delivery" | "no_r_number" | "not_released";
+      client_name?: string | null; destination?: string; other_destination?: boolean }[]>;
 export const setDeliveryClient = (id: number, name: string) => call(client().rpc("delivery_set_client", { p_id: id, p_client_name: name }), "Saving client");
 export const recordDelivery = (id: number, status: Exclude<DeliveryStatus, "pending">, receiverName: string, signature: string, reason: string) =>
   call(client().rpc("delivery_record", { p_id: id, p_status: status, p_receiver_name: receiverName, p_receiver_signature: signature, p_reason: reason }), "Recording delivery");
@@ -318,3 +319,33 @@ export async function loadPickupPhotos(days: number) {
   }
   return { photos, runs, centres };
 }
+
+/* ---------- report release (post-analytical -> courier) ---------- */
+export type ReleaseStatus = "released" | "picked_up" | "delivered" | "returned" | "cancelled";
+export interface ReportRelease {
+  id: number; r_number: string; client_name: string | null; destination: string; released_by: string; released_at: string;
+  status: ReleaseStatus; delivery_id: number | null; closed_by: string | null; closed_at: string | null; note: string | null;
+}
+export interface ReleaseResult {
+  code: string; r_number?: string; result: "released" | "already_released" | "already_with_courier" | "no_r_number";
+  client_name?: string | null; pending_tests?: number; known_to_tracker?: boolean; destination?: string;
+}
+/** Lab view: everything live, plus anything returned or closed in the last `days`. */
+export async function loadReleases(days = 14) {
+  const since = new Date(Date.now() - days * 86400e3).toISOString();
+  return call(client().from("report_releases").select("*")
+    .or(`status.in.(released,picked_up,returned),released_at.gte.${since}`).order("id", { ascending: false }).limit(2000), "Released reports") as Promise<ReportRelease[]>;
+}
+/** Courier view: reports waiting for pick-up. */
+export const loadWaitingReleases = () =>
+  call(client().from("report_releases").select("*").eq("status", "released").order("released_at"), "Released reports") as Promise<ReportRelease[]>;
+export const releaseReports = (codes: string[], destination: string) =>
+  call(client().rpc("release_reports", { p_codes: codes, p_destination: destination }), "Releasing") as Promise<ReleaseResult[]>;
+export const cancelRelease = (id: number, note: string) => call(client().rpc("cancel_release", { p_id: id, p_note: note }), "Withdrawing");
+export function subscribeReleases(onChange: () => void) {
+  const ch = client().channel("releases-live")
+    .on("postgres_changes", { event: "*", schema: "public", table: "report_releases" }, onChange).subscribe();
+  return () => { client().removeChannel(ch); };
+}
+export const releasesForRequisition = (r: string) =>
+  call(client().from("report_releases").select("*").eq("r_number", r).order("id"), "Released reports") as Promise<ReportRelease[]>;

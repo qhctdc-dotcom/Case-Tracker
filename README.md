@@ -186,20 +186,33 @@ Create courier accounts in **Staff** with the role **Courier**.
 
 The paper *Proof of delivery of clients' medical reports* form (GHA-POSTF001) is filled in on the courier's phone and printed from the app in the same layout.
 
-### Courier (on a phone)
+### Step 1: post-analytical releases the reports
+
+Reports can only leave the lab once post-analytical has released them.
+
+1. Go to **Deliveries → 1. Release reports**.
+2. Choose the **destination** (a centre, or *Other…*). It is remembered on that computer.
+3. Scan each finished report with the handheld scanner (or type the R# and press Enter). Each scan shows a result:
+   - **Released**, with the client name. Ready for the courier.
+   - **Released, with a warning** if the tracker still shows tests outstanding on that R#, or if the R# isn't in the tracker. Check the report; **Undo this release** takes it back.
+   - **Already released** or **already with a courier**: nothing changes.
+4. **Waiting for pick-up** lists released reports by destination; **Withdraw** takes one back before a courier collects it.
+5. **Returned, not delivered** lists reports the courier marked ND, CU or C, with the reason. Choose **Release again** (to the same destination) or **Close** (no further delivery, e.g. the client will collect).
+
+### Step 2: the courier picks up and delivers (on a phone)
 
 1. Sign in and tap **Deliver reports** at the top.
 2. Enter the **delivery location** and **department**, **sign** in the box (courier signature) and tap **Start delivery sheet**. This is the pick-up.
-3. Add each report: **Scan report barcodes (photo)**, or type the R#. The client name is filled in from the tracker when the R# is known; otherwise tap **Add client name**.
+3. **Ready for you to collect** lists the reports released for that location. Tick the ones in hand and tap **Pick up**, or scan them (photo) or type the R#. A report that hasn't been released is refused (*hand it back*); one released for a different place is accepted with a note. The client name comes from the release; if it's missing, tap **Add client name**.
 4. At the client, tap **Record delivery** on the report and choose:
    - **Delivered (D):** the receiver types their full name and signs on the phone.
    - **Not delivered (ND)**, **Client unavailable (CU)** or **Closed (C):** a reason is required.
    The date and time are recorded automatically.
 5. When every report has a status, tap **Close sheet and send to the lab**.
 
-A report can only be out for delivery on one sheet at a time. **Remove** takes off a report added by mistake (before its outcome is recorded).
+A report can only be out for delivery on one sheet at a time. **Remove** takes off a report added by mistake (before its outcome is recorded) and puts it back on the released list. Reports marked ND, CU or C go back to post-analytical's **Returned** list.
 
-### Post-analytical (Deliveries tab)
+### Step 3: post-analytical reviews the sheets (Deliveries → 2. Delivery sheets)
 
 - Counts of reports out for delivery, delivered and not delivered today, and sheets awaiting review.
 - Each sheet shows its reports, statuses, receivers and signatures. Filter by status or search by R#, client, receiver or courier.
@@ -254,6 +267,7 @@ More frequent pastes mean fewer *Unclear* cases and tighter delay ranges. The re
 | Receive samples at pre-analytical, undo a receipt | | ✓ | ✓ |
 | View and check pickup photos (Samples → Pickup photos) | | ✓ | ✓ |
 | Manage centres, photo retention and transit alert time | | | ✓ |
+| Release reports for delivery; release returned reports again or withdraw them | | ✓ | ✓ |
 | Fill in report delivery sheets (pick-up, receiver signature, status) | ✓ | | |
 | View, review and print delivery sheets (GHA-POSTF001) | | ✓ | ✓ |
 
@@ -270,7 +284,7 @@ You need free accounts on **Supabase**, **GitHub** and **Render**.
 1. Create a project (the London region is closest to West Africa). Save the database password somewhere safe.
 2. **SQL Editor → New query**: paste and run `supabase/01_database_setup.sql`. The final result should list 11 tables, all with `rls_enabled = true`.
 3. **SQL Editor → New query**: paste and run `supabase/02_first_admin_setup.sql`.
-4. **SQL Editor → New query**: run, one at a time, `supabase/03_sample_transport.sql` (couriers, centres, samples and the private `sample-photos` bucket; ends with *sample transport installed*), `supabase/04_fix_table_permissions.sql` (ends with *table permissions fixed*) and `supabase/05_report_delivery.sql` (report delivery sheets; ends with *report delivery installed*). All three are safe to run again.
+4. **SQL Editor → New query**: run, one at a time, `supabase/03_sample_transport.sql` (couriers, centres, samples and the private `sample-photos` bucket; ends with *sample transport installed*), `supabase/04_fix_table_permissions.sql` (ends with *table permissions fixed*) `supabase/05_report_delivery.sql` (report delivery sheets; ends with *report delivery installed*) and `supabase/06_report_release.sql` (releasing reports before pick-up; ends with *report release installed*). All are safe to run again.
 5. **Authentication → Sign In / Providers**: switch **off** "Allow new users to sign up". Leave the Email provider enabled.
 
 ### 2. The `manage-staff` Edge Function
@@ -298,7 +312,7 @@ Open the Render address. Because nobody exists yet, the app shows **Create the f
 
 ### 5. Upgrading an existing installation
 
-1. Run any of `supabase/03_sample_transport.sql`, `04_fix_table_permissions.sql` and `05_report_delivery.sql` not yet run, in that order, in the SQL Editor.
+1. Run any of `supabase/03_sample_transport.sql`, `04_fix_table_permissions.sql`, `05_report_delivery.sql` and `06_report_release.sql` not yet run, in that order, in the SQL Editor.
 2. Redeploy the `manage-staff` Edge Function with the current `supabase/functions/manage-staff/index.ts` (it adds the Courier role and photo clean-up). Keep **Verify JWT** off.
 3. Push the updated code to GitHub so Render redeploys.
 
@@ -353,6 +367,7 @@ src/
     PhotoReview.tsx         Pickup photo gallery and viewer
     DeliveryCourier.tsx     Courier screen for delivering reports
     DeliveriesView.tsx      Lab view of delivery sheets: review, print, export
+    ReleaseView.tsx         Post-analytical release of reports, waiting and returned lists
     PodForm.tsx             Printable GHA-POSTF001 layout
     Signature.tsx           Signature pad and signature display
     StaffView.tsx           Staff accounts (admins)
@@ -364,6 +379,7 @@ supabase/
   03_sample_transport.sql   Couriers, centres, samples, reception functions, photo bucket
   04_fix_table_permissions.sql  Read permissions for signed-in users (safe to run any time)
   05_report_delivery.sql    Delivery sheets and report deliveries (GHA-POSTF001)
+  06_report_release.sql     Releasing reports before courier pick-up; returned reports
   functions/manage-staff/index.ts   Edge Function for staff accounts
   optional_add_staff_by_sql.sql     Manual alternative to the Staff tab
 ```
@@ -385,6 +401,7 @@ supabase/
 | `courier_runs` | One collection: courier, centre, start and handover time |
 | `samples` | One row per tube: barcode, R#, collection (who, where, when, photo) and reception (who, when) |
 | `delivery_sheets` | One GHA-POSTF001 sheet: courier and signature, location, department, pick-up, closed, reviewed by |
+| `report_releases` | Each release of a report: R#, destination, who released it and when, status (released, picked up, delivered, returned, withdrawn) |
 | `report_deliveries` | One report on a sheet: R#, client, status (D/ND/CU/C), receiver name and signature, time, reason |
 | `activity_log` | Undo, dictionary replacements, staff changes, imports, archives, clear-all |
 
@@ -434,6 +451,8 @@ Department splits are worked out when the page loads, from the current dictionar
 | "No barcode could be read" | Retake closer, flatter and in better light, with fewer tubes per photo; or type the number. |
 | Scans at reception do nothing | Click once on the Samples page so the browser window has focus; the scan box then takes focus automatically. Check the scanner is set to send Enter after each code. |
 | "Couldn't load deliveries" | Run `supabase/05_report_delivery.sql`. |
+| "Couldn't load released reports" | Run `supabase/06_report_release.sql`. |
+| Courier sees nothing under *Ready for you to collect* | The sheet's location must match the destination chosen at release (pick it from the list). Reports for other places are under *Show … released for other places*. |
 | "Couldn't load samples" / "Couldn't load centres" | Run `supabase/03_sample_transport.sql`. |
 | Photos are not being deleted | Redeploy the current `manage-staff` function; use **Settings → Delete expired photos now** to test. |
 | A test is in the wrong department | Add or fix its keyword in **Settings → Department keywords** (or accept it from **Unrecognised test names**). |

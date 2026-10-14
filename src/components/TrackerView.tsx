@@ -241,13 +241,13 @@ function CaseDrawer({ c, siblings, now, onClose, onSelect }: {
     window.addEventListener("keydown", k);
     return () => window.removeEventListener("keydown", k);
   }, [c, onClose]);
-  const [journey, setJourney] = useState<{ samples: api.SampleRow[]; centres: api.Centre[]; deliveries: api.ReportDelivery[] } | null>(null);
+  const [journey, setJourney] = useState<{ samples: api.SampleRow[]; centres: api.Centre[]; deliveries: api.ReportDelivery[]; releases: api.ReportRelease[] } | null>(null);
   useEffect(() => {
     setJourney(null);
     if (!c) return;
     let live = true;
-    Promise.all([api.samplesForRequisition(c.rNumber).catch(() => []), api.loadCentres().catch(() => []), api.deliveriesForRequisition(c.rNumber).catch(() => [])])
-      .then(([samples, centres, deliveries]) => { if (live) setJourney({ samples, centres, deliveries }); });
+    Promise.all([api.samplesForRequisition(c.rNumber).catch(() => []), api.loadCentres().catch(() => []), api.deliveriesForRequisition(c.rNumber).catch(() => []), api.releasesForRequisition(c.rNumber).catch(() => [])])
+      .then(([samples, centres, deliveries, releases]) => { if (live) setJourney({ samples, centres, deliveries, releases }); });
     return () => { live = false; };
   }, [c?.rNumber]); // eslint-disable-line react-hooks/exhaustive-deps
   if (!c) return null;
@@ -330,10 +330,16 @@ function CaseDrawer({ c, siblings, now, onClose, onSelect }: {
           </div>
         )}
 
-        {journey && journey.deliveries.length > 0 && (
+        {journey && (journey.deliveries.length > 0 || journey.releases.length > 0) && (
           <div className="mb-5">
             <h3 className="font-semibold text-ink mb-2">Report delivery</h3>
             <ul className="space-y-2">
+              {journey.releases.map((r) => (
+                <li key={`rel${r.id}`} className="text-sm text-ink-2">
+                  Released for <b className="text-ink">{r.destination}</b> by {r.released_by.split("@")[0]} at <span className="num">{fmtIso(r.released_at)}</span>
+                  {r.status === "released" && " (waiting for courier)"}{r.status === "cancelled" && ` (withdrawn${r.note ? `: ${r.note}` : ""})`}
+                </li>
+              ))}
               {journey.deliveries.map((d) => (
                 <li key={d.id} className="rounded-md p-3 text-sm" style={{ background: C.raised, border: `1px solid ${C.line}` }}>
                   <div className="flex justify-between gap-3 mb-1">

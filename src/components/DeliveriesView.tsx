@@ -3,6 +3,7 @@ import * as api from "../lib/api";
 import { STATUS_LABEL } from "../lib/formTemplate";
 import { fmtIso, fmtTime, norm } from "../lib/tracker";
 import { PrintPod } from "./PodForm";
+import ReleaseView from "./ReleaseView";
 import { SignatureImage } from "./Signature";
 import { Badge, Button, C, Note, Stat, csvCell, downloadFile, inputBase, stamp } from "./ui";
 
@@ -15,6 +16,7 @@ export default function DeliveriesView({ toast }: { toast: (m: string, t?: "ok" 
   const [search, setSearch] = useState("");
   const [openId, setOpenId] = useState<number | null>(null);
   const [printing, setPrinting] = useState<number | null>(null);
+  const [mode, setMode] = useState<"release" | "sheets">("release");
 
   const load = useCallback(async () => {
     try { setData(await api.loadDeliveries(45)); setErr(null); } catch (e: any) { setErr(e.message); }
@@ -68,6 +70,15 @@ export default function DeliveriesView({ toast }: { toast: (m: string, t?: "ok" 
 
   return (
     <div className="max-w-[1400px] mx-auto px-4 sm:px-6 py-5">
+      <div role="tablist" aria-label="Deliveries view" className="inline-flex rounded-lg border overflow-hidden mb-4" style={{ borderColor: C.line }}>
+        {([["release", "1. Release reports"], ["sheets", "2. Delivery sheets"]] as const).map(([k, label]) => (
+          <button key={k} role="tab" aria-selected={mode === k} onClick={() => setMode(k)} className="px-4 py-2 text-sm cursor-pointer"
+            style={{ background: mode === k ? C.ink : C.surface, color: mode === k ? C.surface : C.ink, fontWeight: mode === k ? 600 : 400 }}>
+            {label}
+          </button>
+        ))}
+      </div>
+      {mode === "release" ? <ReleaseView toast={toast} /> : <>
       {err && <Note tone="err">Couldn't load deliveries: {err}. Has 05_report_delivery.sql been run in Supabase?</Note>}
       <h1 className="text-xl font-semibold text-ink mb-1">Report deliveries</h1>
       <p className="text-sm text-ink-2 mb-4">Proof of delivery of clients' medical reports (GHA-POSTF001). Couriers fill in sheets on their phones; review and print them here.</p>
@@ -151,6 +162,7 @@ export default function DeliveriesView({ toast }: { toast: (m: string, t?: "ok" 
           })}
         </>
       )}
+      </>}
       {printSheet && data && <PrintPod sheet={printSheet} rows={data.rows.filter((r) => r.sheet_id === printSheet.id)} onDone={() => setPrinting(null)} />}
     </div>
   );
