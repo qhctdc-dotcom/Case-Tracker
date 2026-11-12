@@ -12,7 +12,7 @@ export const STAFF_FUNCTION = "manage-staff";
 export const configOk = /^https:\/\/[a-z0-9-]+\.supabase\.co\/?$/i.test(SUPABASE_URL);
 export const sb: SupabaseClient | null = configOk ? createClient(SUPABASE_URL.replace(/\/$/, ""), SUPABASE_KEY) : null;
 
-export type Role = "staff" | "admin" | "courier";
+export type Role = "staff" | "admin" | "courier" | "display";
 export interface Me { email: string; display_name: string | null; role: Role; active: boolean }
 export interface PasteRow { id: number; at: string; mode: "full" | "partial"; by_email: string; locked: boolean; undone_at: string | null }
 export interface Settings { graceStd: number; graceAlist: number; archiveDays: number }

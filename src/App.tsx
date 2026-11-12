@@ -11,6 +11,7 @@ import CourierView from "./components/CourierView";
 import ReceptionView from "./components/ReceptionView";
 import DeliveriesView from "./components/DeliveriesView";
 import DeliveryCourier from "./components/DeliveryCourier";
+import WallDisplay from "./components/WallDisplay";
 import { Button, C, Logo } from "./components/ui";
 import DisplayMenu from "./components/DisplayMenu";
 import { useDisplay } from "./lib/display";
@@ -73,7 +74,7 @@ export default function App() {
   const scheduleRefresh = useCallback((ms = 1200) => { clearTimeout(timer.current); timer.current = window.setTimeout(refresh, ms); }, [refresh]);
 
   useEffect(() => {
-    if (phase !== "app" || me?.role === "courier") return;
+    if (phase !== "app" || me?.role === "courier" || me?.role === "display") return;
     const unsub = api.subscribeLive(() => scheduleRefresh(), setLive);
     const tick = setInterval(() => setNow(Date.now()), 60000);
     const safety = setInterval(() => { if (!document.hidden) refresh(); }, 5 * 60000);
@@ -94,7 +95,7 @@ export default function App() {
       return;
     }
     setMe(r);
-    if (r.role !== "courier") await refresh(); // couriers only see their collection screen
+    if (r.role !== "courier" && r.role !== "display") await refresh(); // couriers and wall displays have their own screens
     setPhase("app");
   }, [refresh]);
 
@@ -142,6 +143,7 @@ export default function App() {
   if (phase === "boot") {
     return <div className="min-h-screen flex items-center justify-center text-sm text-ink-3">Connecting…</div>;
   }
+  if (phase === "app" && me?.role === "display") return <WallDisplay onSignOut={doSignOut} />;
   if (phase === "app" && me?.role === "courier") {
     return (
       <div className="min-h-screen bg-canvas">

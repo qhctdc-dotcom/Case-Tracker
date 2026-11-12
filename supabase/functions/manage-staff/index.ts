@@ -53,7 +53,7 @@ function getSecretKey(): string | undefined {
 }
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const ROLES = ["staff", "admin", "courier"];
+const ROLES = ["staff", "admin", "courier", "display"];
 
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
@@ -186,7 +186,7 @@ Deno.serve(async (req: Request) => {
       const role = String(body.role ?? "staff");
       const displayName = String(body.display_name ?? "").trim() || null;
       if (password.length < 8) return json({ error: "Password must be at least 8 characters" }, 400);
-      if (!ROLES.includes(role)) return json({ error: "Role must be staff, admin or courier" }, 400);
+      if (!ROLES.includes(role)) return json({ error: "Role must be staff, admin, courier or display" }, 400);
 
       let createdId: string | null = null;
       const { data: created, error: createErr } = await admin.auth.admin.createUser({
@@ -234,7 +234,7 @@ Deno.serve(async (req: Request) => {
 
     if (action === "set_role") {
       const role = String(body.role ?? "");
-      if (!ROLES.includes(role)) return json({ error: "Role must be staff, admin or courier" }, 400);
+      if (!ROLES.includes(role)) return json({ error: "Role must be staff, admin, courier or display" }, 400);
       if (email === callerEmail && role !== "admin") return json({ error: "You can't remove your own admin rights" }, 400);
       const { error } = await admin.from("staff").update({ role }).eq("email", email);
       if (error) throw error;
