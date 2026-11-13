@@ -7,6 +7,7 @@ import {
 } from "../lib/tracker";
 import { Button, C, Note, Panel, downloadFile, inputBase, inputCls, stamp } from "./ui";
 import CentresPanel from "./CentresPanel";
+import RoutesPanel from "./RoutesPanel";
 
 export default function SettingsView({ snap, dicts, slices, isAdmin, refresh, toast }: {
   snap: api.Snapshot; dicts: Dicts; slices: Slice[]; isAdmin: boolean;
@@ -23,6 +24,7 @@ export default function SettingsView({ snap, dicts, slices, isAdmin, refresh, to
       <AlistEditor rows={snap.alist} run={run} />
       <DeptEditor rows={snap.dept} run={run} />
       <CentresPanel isAdmin={isAdmin} toast={toast} />
+      <RoutesPanel isAdmin={isAdmin} toast={toast} />
       <DataPanel snap={snap} slices={slices} isAdmin={isAdmin} run={run} toast={toast} refresh={refresh} />
     </div>
   );

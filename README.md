@@ -14,17 +14,18 @@ A shared web tool that follows laboratory samples from outside collection centre
 2. [Using the tracker](#using-the-tracker)
 3. [Sample collection and reception](#sample-collection-and-reception)
 4. [Report delivery (GHA-POSTF001)](#report-delivery-gha-postf001)
-5. [How the tracker decides things](#how-the-tracker-decides-things)
-6. [Roles and permissions](#roles-and-permissions)
-7. [Setting it up from scratch](#setting-it-up-from-scratch)
-8. [Configuration](#configuration)
-9. [Project structure](#project-structure)
-10. [Database overview](#database-overview)
-11. [Security and data protection](#security-and-data-protection)
-12. [Backups, archiving and housekeeping](#backups-archiving-and-housekeeping)
-13. [Troubleshooting](#troubleshooting)
-14. [Known limitations](#known-limitations)
-15. [Local development](#local-development)
+5. [Wall display (TV)](#wall-display-tv)
+6. [How the tracker decides things](#how-the-tracker-decides-things)
+7. [Roles and permissions](#roles-and-permissions)
+8. [Setting it up from scratch](#setting-it-up-from-scratch)
+9. [Configuration](#configuration)
+10. [Project structure](#project-structure)
+11. [Database overview](#database-overview)
+12. [Security and data protection](#security-and-data-protection)
+13. [Backups, archiving and housekeeping](#backups-archiving-and-housekeeping)
+14. [Troubleshooting](#troubleshooting)
+15. [Known limitations](#known-limitations)
+16. [Local development](#local-development)
 
 ---
 
@@ -131,14 +132,21 @@ Installed copies update themselves: each time the app opens with a connection, i
 
 ## Sample collection and reception
 
+### Courier routes (set up by an admin)
+
+**Settings → Courier routes → New route**: give the route a name (e.g. *Route 1: East*), add its sites in visiting order (↑ ↓ to reorder), tick the couriers assigned to it, and **Save route**. A courier can be on several routes, and a route can have several couriers. Untick *Route in use* to hide a route without deleting it. Sites themselves are added under **Settings → Sample collection: centres and photos**.
+
 ### Courier (on a phone)
 
-1. Open the tracker's web address on the phone and sign in with the courier account an admin created. Couriers only ever see the collection screen.
-2. Tap the centre you are collecting from. This starts a **collection**.
-3. Tap **Take photo of samples**. Several tubes can go in one photo; keep barcodes flat, in focus and well lit.
-4. Check the barcodes the app found. Untick any that are wrong, or type a number that could not be read, then tap **Log samples**. Each logged tube is now *In transit* for the lab to see.
-5. Repeat for more tubes. **Remove** takes out a tube logged by mistake (only before the lab receives it).
-6. At the lab, tap **Hand over to the lab**. The collection is closed; **Recent handovers** then shows how many of its tubes the lab has scanned in.
+1. Open the tracker's web address on the phone and sign in with the courier account an admin created. Couriers only ever see the collection screens.
+2. The home screen lists **your routes**, each with its sites in order. Each site shows *Not collected yet today*, *Collecting: N tubes so far*, or *Handed over today*, and a tick once it has been collected.
+3. Tap a site to collect there, then **Take photo of samples**. Several tubes can go in one photo; check the barcodes found, untick any wrong ones or type a number that couldn't be read, then **Log samples**. **Remove** takes out a tube logged by mistake (only before the lab receives it).
+4. Tap **Done at this site, back to my route** and go on to the next site. Collections at several sites can be open at the same time.
+5. At the lab, tap **Hand over everything to the lab**. All open collections are handed over at once, and **Recent handovers** shows how many tubes the lab has scanned in.
+
+**Emergency collection**: the red button at the top lets a courier collect at **any** site, even one not on their route. Choose the site and give a short reason (required, e.g. *STAT troponin requested by Dr Mensah*). Emergency collections are marked **EMERGENCY** with the reason, listed first on the reception screen, and highlighted on the wall display.
+
+A courier with no route assigned sees a note to ask an admin, and can still make emergency collections.
 
 Barcodes are read on the phone itself. The tube barcode carries the same R# number as the MT report, so each sample links to its case in the tracker automatically (the first run of 4 or more digits in the barcode is taken as the R#).
 
@@ -154,7 +162,7 @@ Open the **Samples** tab. The large scan box is always ready: scan each tube (th
 
 **Undo this scan** reverses a mistaken scan. Below the scan box:
 
-- **In transit**, grouped by collection (centre, courier, handed over or still collecting), with each tube's time in transit. Tubes past the alert time (default 3 hours) are shown in red. **Photo** opens the pickup photo.
+- **In transit**, grouped by collection (centre, courier, handed over or still collecting), with each tube's time in transit. **EMERGENCY** collections come first, with their reason. Tubes past the alert time (default 3 hours) are shown in red. **Photo** opens the pickup photo.
 - **Received today**, newest first, with transit times and flags.
 - Filter by centre, find a barcode or R#, and **Export (CSV)**.
 
@@ -226,6 +234,27 @@ The form's document-control details (form number, version, issue date, author, a
 
 ---
 
+## Wall display (TV)
+
+A read-only screen for a TV in pre-analytical, showing **incoming samples only**: tubes on the way, collections on the way, delayed collections, received today, a panel per centre (courier, number of tubes, collection time, time on the road), and the latest arrivals. It updates live as couriers log samples and pre-analytical scans them in; if more than six centres have samples on the way, the panels page through automatically every 12 seconds.
+
+Delayed collections (on the road longer than the alert time in **Settings**, default 3 hours) turn red. **Emergency** collections are shown first, in pink with an EMERGENCY label and their reason, and the count of emergency tubes replaces *Collections on the way* while any are on the road. A collection the courier has handed over but that hasn't been scanned in shows *waiting to be scanned in*.
+
+### Setting it up
+
+1. **Staff → Add a staff member** with the role **Wall display (TV)**, e.g. *pre-analytical-tv@yourlab* with a strong password. This account can only see the wall screen: no tracker, reports, deliveries, photos or settings, and it cannot change anything.
+2. On the computer connected to the TV (a mini PC or old laptop via HDMI is most reliable), open the tracker's Render address in **Chrome** and sign in with the display account. It stays signed in.
+3. Make it start by itself, full screen (Windows):
+   - Create a shortcut to Chrome with this target (one line, using your address):
+     `"C:\Program Files\Google\Chrome\Application\chrome.exe" --kiosk --noerrdialogs --disable-session-crashed-bubble https://your-tracker.onrender.com`
+   - Press **Win + R**, type `shell:startup`, and put the shortcut in that folder.
+   - In Windows settings, set **Screen** and **Sleep** to **Never**, and turn off the screensaver. Set the PC to restart automatically after a power cut if its BIOS allows it.
+4. To leave kiosk mode, press **Alt + F4**. To sign the TV out, use the small **Sign out** link at the bottom right; an admin can also **Deactivate** the display account in Staff.
+
+The screen keeps the display awake, refreshes itself every 2 minutes as a safety net (plus live updates), and reloads every 6 hours to pick up new versions. If the network drops, the status at the top right turns red (*Connection lost, retrying…*).
+
+---
+
 ## How the tracker decides things
 
 ### Department of a test
@@ -263,7 +292,8 @@ More frequent pastes mean fewer *Unclear* cases and tighter delay ranges. The re
 | Import from a backup file | | | ✓ |
 | Archive old completed cases | | | ✓ |
 | Clear all tracked cases | | | ✓ |
-| Collect samples by phone (start collection, photograph, hand over) | ✓ | ✓ | ✓ |
+| Collect samples by phone on assigned routes; emergency collections at any site | ✓ | ✓ | ✓ |
+| Create courier routes and assign couriers | | | ✓ |
 | Receive samples at pre-analytical, undo a receipt | | ✓ | ✓ |
 | View and check pickup photos (Samples → Pickup photos) | | ✓ | ✓ |
 | Manage centres, photo retention and transit alert time | | | ✓ |
@@ -271,7 +301,7 @@ More frequent pastes mean fewer *Unclear* cases and tighter delay ranges. The re
 | Fill in report delivery sheets (pick-up, receiver signature, status) | ✓ | | |
 | View, review and print delivery sheets (GHA-POSTF001) | | ✓ | ✓ |
 
-Couriers see only the collection screen and only their own collections; they cannot see the tracker, reports or other couriers' work. Every user can change their own password from the menu under their name. Deactivating someone blocks their sign-in immediately; their past work stays in the records.
+Wall display accounts see only the read-only incoming-samples screen. Couriers see only the collection screen and only their own collections; they cannot see the tracker, reports or other couriers' work. Every user can change their own password from the menu under their name. Deactivating someone blocks their sign-in immediately; their past work stays in the records.
 
 ---
 
@@ -284,7 +314,7 @@ You need free accounts on **Supabase**, **GitHub** and **Render**.
 1. Create a project (the London region is closest to West Africa). Save the database password somewhere safe.
 2. **SQL Editor → New query**: paste and run `supabase/01_database_setup.sql`. The final result should list 11 tables, all with `rls_enabled = true`.
 3. **SQL Editor → New query**: paste and run `supabase/02_first_admin_setup.sql`.
-4. **SQL Editor → New query**: run, one at a time, `supabase/03_sample_transport.sql` (couriers, centres, samples and the private `sample-photos` bucket; ends with *sample transport installed*), `supabase/04_fix_table_permissions.sql` (ends with *table permissions fixed*) `supabase/05_report_delivery.sql` (report delivery sheets; ends with *report delivery installed*) and `supabase/06_report_release.sql` (releasing reports before pick-up; ends with *report release installed*). All are safe to run again.
+4. **SQL Editor → New query**: run, one at a time, `supabase/03_sample_transport.sql` (couriers, centres, samples and the private `sample-photos` bucket; ends with *sample transport installed*), `supabase/04_fix_table_permissions.sql` (ends with *table permissions fixed*) `supabase/05_report_delivery.sql` (report delivery sheets; ends with *report delivery installed*) and `supabase/06_report_release.sql` (releasing reports before pick-up; ends with *report release installed*) `supabase/07_wall_display.sql` (TV accounts; ends with *wall display installed*) and `supabase/08_courier_routes.sql` (courier routes and emergency collections; ends with *courier routes installed*). All are safe to run again.
 5. **Authentication → Sign In / Providers**: switch **off** "Allow new users to sign up". Leave the Email provider enabled.
 
 ### 2. The `manage-staff` Edge Function
@@ -312,7 +342,7 @@ Open the Render address. Because nobody exists yet, the app shows **Create the f
 
 ### 5. Upgrading an existing installation
 
-1. Run any of `supabase/03_sample_transport.sql`, `04_fix_table_permissions.sql`, `05_report_delivery.sql` and `06_report_release.sql` not yet run, in that order, in the SQL Editor.
+1. Run any of `supabase/03_sample_transport.sql`, `04_fix_table_permissions.sql`, `05_report_delivery.sql`, `06_report_release.sql`, `07_wall_display.sql` and `08_courier_routes.sql` not yet run, in that order, in the SQL Editor.
 2. Redeploy the `manage-staff` Edge Function with the current `supabase/functions/manage-staff/index.ts` (it adds the Courier role and photo clean-up). Keep **Verify JWT** off.
 3. Push the updated code to GitHub so Render redeploys.
 
@@ -362,12 +392,14 @@ src/
     ReportView.tsx          Delay report
     SettingsView.tsx        Dictionaries, unrecognised names, backup, admin tools
     CentresPanel.tsx        Collection centres, photo retention, transit alert
-    CourierView.tsx         Courier phone screen: collections, photos, handover
+    RoutesPanel.tsx         Courier routes: sites in order, assigned couriers
+    CourierView.tsx         Courier phone screen: routes, sites, emergency collections, photos, handover
     ReceptionView.tsx       Pre-analytical scanning, in transit, received today
     PhotoReview.tsx         Pickup photo gallery and viewer
     DeliveryCourier.tsx     Courier screen for delivering reports
     DeliveriesView.tsx      Lab view of delivery sheets: review, print, export
     ReleaseView.tsx         Post-analytical release of reports, waiting and returned lists
+    WallDisplay.tsx         TV screen: incoming samples by centre, live
     PodForm.tsx             Printable GHA-POSTF001 layout
     Signature.tsx           Signature pad and signature display
     StaffView.tsx           Staff accounts (admins)
@@ -380,6 +412,8 @@ supabase/
   04_fix_table_permissions.sql  Read permissions for signed-in users (safe to run any time)
   05_report_delivery.sql    Delivery sheets and report deliveries (GHA-POSTF001)
   06_report_release.sql     Releasing reports before courier pick-up; returned reports
+  07_wall_display.sql       Read-only wall display (TV) accounts
+  08_courier_routes.sql     Courier routes, route assignments, emergency collections
   functions/manage-staff/index.ts   Edge Function for staff accounts
   optional_add_staff_by_sql.sql     Manual alternative to the Staff tab
 ```
@@ -398,7 +432,8 @@ supabase/
 | `app_settings` | Grace periods, archive age |
 | `staff` | Who may use the tracker, and their role |
 | `centres` | Collection centres |
-| `courier_runs` | One collection: courier, centre, start and handover time |
+| `courier_runs` | One collection at one site: courier, centre, route (or emergency with reason), start and handover time |
+| `courier_routes`, `route_sites`, `route_assignments` | Routes, their sites in order, and the couriers assigned to them |
 | `samples` | One row per tube: barcode, R#, collection (who, where, when, photo) and reception (who, when) |
 | `delivery_sheets` | One GHA-POSTF001 sheet: courier and signature, location, department, pick-up, closed, reviewed by |
 | `report_releases` | Each release of a report: R#, destination, who released it and when, status (released, picked up, delivered, returned, withdrawn) |
@@ -452,6 +487,9 @@ Department splits are worked out when the page loads, from the current dictionar
 | Scans at reception do nothing | Click once on the Samples page so the browser window has focus; the scan box then takes focus automatically. Check the scanner is set to send Enter after each code. |
 | "Couldn't load deliveries" | Run `supabase/05_report_delivery.sql`. |
 | "Couldn't load released reports" | Run `supabase/06_report_release.sql`. |
+| Wall display shows *Loading…* or the sign-in page | Check the TV computer's network; sign in again with the display account. If it says the login isn't on the staff list, run `supabase/07_wall_display.sql` and check the account's role is *Wall display (TV)*. |
+| Courier sees *No route has been assigned to you* | An admin needs to tick the courier on a route in **Settings → Courier routes** (and the route must be *in use*). Run `supabase/08_courier_routes.sql` if routes can't be loaded. |
+| Courier gets *That site is not on a route assigned to you* | The site isn't on their routes. Add it to the route, or use **Emergency collection** if it's urgent. |
 | Courier sees nothing under *Ready for you to collect* | The sheet's location must match the destination chosen at release (pick it from the list). Reports for other places are under *Show … released for other places*. |
 | "Couldn't load samples" / "Couldn't load centres" | Run `supabase/03_sample_transport.sql`. |
 | Photos are not being deleted | Redeploy the current `manage-staff` function; use **Settings → Delete expired photos now** to test. |

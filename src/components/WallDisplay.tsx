@@ -4,6 +4,7 @@ import { formatMinutes } from "../lib/tracker";
 
 // Fixed TV palette: dark, high contrast, readable across a room.
 const T = {
+  emg: "#ff4fa3",
   bg: "#0b1016", panel: "#141c25", line: "#263241", ink: "#f1f5f9", ink2: "#b8c4d0", ink3: "#7f8c99",
   accent: "#5bb8e0", good: "#5fd394", warn: "#f5b84f", bad: "#ff6b6b",
 };
@@ -57,12 +58,12 @@ export default function WallDisplay({ onSignOut }: { onSignOut: () => void }) {
       const run = data.runs.find((r) => r.id === id) || null;
       const oldest = Math.min(...items.map((s) => new Date(s.collected_at || t).getTime()));
       const age = (t - oldest) / 60000;
-      return { id, run, centreId: run?.centre_id ?? items[0]!.centre_id, items, age, delayed: age > alert, atLab: !!run?.handed_over_at };
+      return { id, run, centreId: run?.centre_id ?? items[0]!.centre_id, items, age, delayed: age > alert, atLab: !!run?.handed_over_at, emergency: !!run?.is_emergency };
     });
     const centres = [...new Set(runs.map((r) => r.centreId))].map((cid) => {
-      const rs = runs.filter((r) => r.centreId === cid).sort((a, b) => b.age - a.age);
-      return { cid, name: centreName(cid), runs: rs, tubes: rs.reduce((n, r) => n + r.items.length, 0), delayed: rs.some((r) => r.delayed), oldest: rs[0]?.age ?? 0 };
-    }).sort((a, b) => Number(b.delayed) - Number(a.delayed) || b.oldest - a.oldest);
+      const rs = runs.filter((r) => r.centreId === cid).sort((a, b) => Number(b.emergency) - Number(a.emergency) || b.age - a.age);
+      return { cid, name: centreName(cid), runs: rs, tubes: rs.reduce((n, r) => n + r.items.length, 0), delayed: rs.some((r) => r.delayed), oldest: rs[0]?.age ?? 0, emergency: rs.some((r) => r.emergency) };
+    }).sort((a, b) => Number(b.emergency) - Number(a.emergency) || Number(b.delayed) - Number(a.delayed) || b.oldest - a.oldest);
     const startOfDay = new Date(now); startOfDay.setHours(0, 0, 0, 0);
     const today = data.samples.filter((s) => s.received_at && new Date(s.received_at) >= startOfDay)
       .sort((a, b) => b.received_at!.localeCompare(a.received_at!));
@@ -72,6 +73,7 @@ export default function WallDisplay({ onSignOut }: { onSignOut: () => void }) {
       collections: runs.length,
       delayedTubes: runs.filter((r) => r.delayed).reduce((n, r) => n + r.items.length, 0),
       receivedToday: today.length,
+      emergencyTubes: runs.filter((r) => r.emergency).reduce((n, r) => n + r.items.length, 0),
       recent: today.slice(0, 9),
     };
   }, [data, now]);
@@ -111,7 +113,9 @@ export default function WallDisplay({ onSignOut }: { onSignOut: () => void }) {
         <section style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "1vw" }}>
           {[
             { label: "Tubes on the way", value: view.tubes, color: T.accent },
-            { label: "Collections on the way", value: view.collections, color: T.ink },
+            view.emergencyTubes
+              ? { label: "EMERGENCY tubes on the way", value: view.emergencyTubes, color: T.emg }
+              : { label: "Collections on the way", value: view.collections, color: T.ink },
             { label: `Delayed (over ${formatMinutes(view.alert)})`, value: view.delayedTubes, color: view.delayedTubes ? T.bad : T.ink3 },
             { label: "Received today", value: view.receivedToday, color: T.good },
           ].map((s) => (
@@ -145,7 +149,8 @@ export default function WallDisplay({ onSignOut }: { onSignOut: () => void }) {
               <div style={{ flex: 1, minHeight: 0, display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gridTemplateRows: "repeat(2, 1fr)", gap: "1vw" }}>
                 {shown.map((c) => (
                   <div key={c.cid ?? "x"} style={{ background: T.panel, borderRadius: "0.8vw", padding: "1vw 1.2vw", display: "flex", flexDirection: "column", minHeight: 0,
-                    borderLeft: `0.45vw solid ${c.delayed ? T.bad : T.accent}` }}>
+                    borderLeft: `0.45vw solid ${c.emergency ? T.emg : c.delayed ? T.bad : T.accent}`, boxShadow: c.emergency ? `0 0 0 0.2vw ${T.emg} inset` : undefined }}>
+                    {c.emergency && <div style={{ alignSelf: "flex-start", background: T.emg, color: "#fff", fontWeight: 800, fontSize: fs(0.95), padding: "0.15vw 0.7vw", borderRadius: "0.4vw", marginBottom: "0.4vw", letterSpacing: "0.05vw" }}>EMERGENCY</div>}
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: "1vw" }}>
                       <div style={{ fontSize: fs(1.7), fontWeight: 700, lineHeight: 1.15, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.name}</div>
                       <div style={{ fontSize: fs(2.6), fontWeight: 700, color: c.delayed ? T.bad : T.accent, lineHeight: 1, fontVariantNumeric: "tabular-nums" }}>{c.tubes}</div>
@@ -158,14 +163,14 @@ export default function WallDisplay({ onSignOut }: { onSignOut: () => void }) {
                         return (
                           <div key={String(r.id)}>
                             <div style={{ display: "flex", justifyContent: "space-between", fontSize: fs(1.05), gap: "0.6vw" }}>
-                              <span style={{ color: T.ink }}>{firstName(r.run?.courier_email ?? r.items[0]!.collected_by)} <span style={{ color: T.ink3 }}>· {r.items.length} tube{r.items.length === 1 ? "" : "s"}, from {hhmm(new Date(Math.min(...r.items.map((x) => new Date(x.collected_at || Date.now()).getTime()))).toISOString())}</span></span>
+                              <span style={{ color: T.ink }}>{r.emergency && <b style={{ color: T.emg }}>Emergency · </b>}{firstName(r.run?.courier_email ?? r.items[0]!.collected_by)} <span style={{ color: T.ink3 }}>· {r.items.length} tube{r.items.length === 1 ? "" : "s"}, from {hhmm(new Date(Math.min(...r.items.map((x) => new Date(x.collected_at || Date.now()).getTime()))).toISOString())}</span></span>
                               <span style={{ color: col, fontWeight: 700, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>{formatMinutes(r.age)}</span>
                             </div>
                             <div style={{ height: "0.45vw", background: T.line, borderRadius: "1vw", overflow: "hidden", marginTop: "0.25vw" }}>
                               <div style={{ width: `${Math.max(4, pct)}%`, height: "100%", background: col }} />
                             </div>
                             <div style={{ fontSize: fs(0.85), color: r.atLab ? T.warn : T.ink3, marginTop: "0.2vw" }}>
-                              {r.atLab ? `Handed over at ${hhmm(r.run!.handed_over_at)}: waiting to be scanned in` : r.delayed ? "Delayed: check with the courier" : "Collecting or on the road"}
+                              {r.atLab ? `Handed over at ${hhmm(r.run!.handed_over_at)}: waiting to be scanned in` : r.emergency && r.run?.emergency_reason ? r.run.emergency_reason : r.delayed ? "Delayed: check with the courier" : "Collecting or on the road"}
                             </div>
                           </div>
                         );

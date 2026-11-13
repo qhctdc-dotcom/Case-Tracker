@@ -154,7 +154,8 @@ export const getSession = () => client().auth.getSession();
 
 /* ---------- sample transport (courier -> pre-analytical) ---------- */
 export interface Centre { id: number; name: string; active: boolean }
-export interface CourierRun { id: number; courier_email: string; centre_id: number; started_at: string; handed_over_at: string | null }
+export interface CourierRun { id: number; courier_email: string; centre_id: number; started_at: string; handed_over_at: string | null;
+  route_id?: number | null; is_emergency?: boolean; emergency_reason?: string | null }
 export interface SampleRow {
   id: number; barcode: string; barcode_raw: string | null; r_number: string | null; run_id: number | null; centre_id: number | null;
   collected_by: string | null; collected_at: string | null; photo_path: string | null; photo_deleted_at: string | null;
@@ -201,7 +202,8 @@ export async function myOpenRun(email: string) {
   return { runs, samples };
 }
 
-export const startRun = (centreId: number) => call(client().rpc("courier_start_run", { p_centre_id: centreId }), "Starting collection") as Promise<number>;
+export const startRun = (centreId: number, routeId: number | null = null, emergency = false, reason = "") =>
+  call(client().rpc("courier_start_run", { p_centre_id: centreId, p_route_id: routeId, p_emergency: emergency, p_reason: reason || null }), "Starting collection") as Promise<number>;
 export const logSamples = (runId: number, barcodes: string[], photoPath: string | null) =>
   call(client().rpc("courier_log_samples", { p_run_id: runId, p_barcodes: barcodes, p_photo_path: photoPath }), "Logging samples") as
     Promise<{ barcode: string; r_number: string | null; result: "logged" | "already_in_this_run" | "already_in_transit"; sample_id: number }[]>;
@@ -349,3 +351,22 @@ export function subscribeReleases(onChange: () => void) {
 }
 export const releasesForRequisition = (r: string) =>
   call(client().from("report_releases").select("*").eq("r_number", r).order("id"), "Released reports") as Promise<ReportRelease[]>;
+
+/* ---------- courier routes ---------- */
+export interface CourierRoute { id: number; name: string; active: boolean; sites: number[]; couriers: string[] }
+
+/** Lab staff see every route; couriers only the routes assigned to them. */
+export async function loadRoutes(): Promise<CourierRoute[]> {
+  const [routes, sites, assigns] = await Promise.all([
+    call(client().from("courier_routes").select("id,name,active").order("name"), "Routes") as Promise<{ id: number; name: string; active: boolean }[]>,
+    call(client().from("route_sites").select("route_id,centre_id,position").order("position"), "Route sites") as Promise<{ route_id: number; centre_id: number; position: number }[]>,
+    call(client().from("route_assignments").select("route_id,courier_email"), "Route assignments") as Promise<{ route_id: number; courier_email: string }[]>,
+  ]);
+  return routes.map((r) => ({
+    ...r,
+    sites: sites.filter((x) => x.route_id === r.id).sort((a, b) => a.position - b.position).map((x) => x.centre_id),
+    couriers: assigns.filter((x) => x.route_id === r.id).map((x) => x.courier_email),
+  }));
+}
+export const saveRoute = (r: { id: number | null; name: string; active: boolean; sites: number[]; couriers: string[] }) =>
+  call(client().rpc("save_route", { p_id: r.id, p_name: r.name, p_active: r.active, p_centre_ids: r.sites, p_couriers: r.couriers }), "Saving route") as Promise<number>;

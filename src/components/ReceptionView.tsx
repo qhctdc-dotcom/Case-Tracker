@@ -123,7 +123,7 @@ export default function ReceptionView({ toast }: { toast: (m: string, t?: "ok" |
     const notLogged = receivedToday.filter((s) => s.source === "reception");
     const runIds = [...new Set(inTransit.map((s) => s.run_id))];
     const runs = runIds.map((id) => ({ run: data.runs.find((r) => r.id === id) || null, items: inTransit.filter((s) => s.run_id === id) }))
-      .sort((a, b) => (a.items[0]?.collected_at || "").localeCompare(b.items[0]?.collected_at || ""));
+      .sort((a, b) => Number(!!b.run?.is_emergency) - Number(!!a.run?.is_emergency) || (a.items[0]?.collected_at || "").localeCompare(b.items[0]?.collected_at || ""));
     return { inTransit, receivedToday, late, notLogged, runs };
   }, [data, centre, search, now, alertMin]);
 
@@ -208,9 +208,13 @@ export default function ReceptionView({ toast }: { toast: (m: string, t?: "ok" |
               {view.runs.map(({ run, items }) => {
                 const oldest = Math.max(...items.map((s) => (now - new Date(s.collected_at || now).getTime()) / 60000));
                 return (
-                  <div key={run?.id ?? "none"} className="card mb-3 overflow-hidden">
-                    <div className="px-4 py-2.5 flex items-center justify-between gap-3 flex-wrap border-b" style={{ borderColor: C.line, background: C.raised }}>
-                      <span className="text-ink font-semibold">{centreName(run?.centre_id ?? items[0]!.centre_id)}</span>
+                  <div key={run?.id ?? "none"} className="card mb-3 overflow-hidden" style={run?.is_emergency ? { borderLeft: `6px solid ${C.danger}` } : undefined}>
+                    <div className="px-4 py-2.5 flex items-center justify-between gap-3 flex-wrap border-b" style={{ borderColor: C.line, background: run?.is_emergency ? tint(C.danger, 10) : C.raised }}>
+                      <span className="text-ink font-semibold">
+                        {run?.is_emergency && <span className="mr-2"><Badge color={C.danger} solid>EMERGENCY</Badge></span>}
+                        {centreName(run?.centre_id ?? items[0]!.centre_id)}
+                        {run?.is_emergency && run.emergency_reason && <span className="block text-sm font-normal text-ink-2">{run.emergency_reason}</span>}
+                      </span>
                       <span className="text-sm text-ink-2">
                         {run ? `${run.courier_email.split("@")[0]}, ` : ""}
                         {run?.handed_over_at ? `handed over ${fmtTime(run.handed_over_at)}` : "still collecting"}
