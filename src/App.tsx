@@ -12,11 +12,12 @@ import ReceptionView from "./components/ReceptionView";
 import DeliveriesView from "./components/DeliveriesView";
 import DeliveryCourier from "./components/DeliveryCourier";
 import WallDisplay from "./components/WallDisplay";
+import EmailTrackingView from "./components/EmailTrackingView";
 import { Button, C, Logo } from "./components/ui";
 import DisplayMenu from "./components/DisplayMenu";
 import { useDisplay } from "./lib/display";
 
-type Tab = "tracker" | "samples" | "deliveries" | "report" | "settings" | "staff";
+type Tab = "tracker" | "samples" | "deliveries" | "emails" | "report" | "settings" | "staff";
 type Phase = "boot" | "auth" | "app";
 
 function LiveClock() {
@@ -197,7 +198,7 @@ export default function App() {
   const isAdmin = me.role === "admin";
   const lastPaste = snap.pastes[0] || null;
   const initials = (me.display_name || me.email).split(/[\s@.]+/).filter(Boolean).slice(0, 2).map((w) => w[0]!.toUpperCase()).join("");
-  const tabs: [Tab, string][] = [["tracker", "Tracker"], ["samples", "Samples"], ["deliveries", "Deliveries"], ["report", "Delay report"], ["settings", "Settings"], ...(isAdmin ? [["staff", "Staff"] as [Tab, string]] : [])];
+  const tabs: [Tab, string][] = [["tracker", "Tracker"], ["samples", "Samples"], ["deliveries", "Deliveries"], ["emails", "Emails"], ["report", "Delay report"], ["settings", "Settings"], ...(isAdmin ? [["staff", "Staff"] as [Tab, string]] : [])];
 
   return (
     <div className="min-h-screen bg-canvas">
@@ -258,6 +259,7 @@ export default function App() {
         {tab === "tracker" && <TrackerView slices={slices} now={now} lastPaste={lastPaste} onOpenPaste={() => setPasteOpen(true)} />}
         {tab === "samples" && <ReceptionView toast={toast} />}
         {tab === "deliveries" && <DeliveriesView toast={toast} />}
+        {tab === "emails" && <EmailTrackingView toast={toast} />}
         {tab === "report" && <ReportView slices={slices} pasteTimes={snap.pastes.map((p) => p.at)} dicts={dicts} settings={snap.settings} onError={(m) => toast(m, "err")} />}
         {tab === "settings" && <SettingsView snap={snap} dicts={dicts} slices={slices} isAdmin={isAdmin} refresh={refresh} toast={toast} />}
         {tab === "staff" && isAdmin && <StaffView me={me} />}

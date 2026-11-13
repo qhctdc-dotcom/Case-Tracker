@@ -370,3 +370,37 @@ export async function loadRoutes(): Promise<CourierRoute[]> {
 }
 export const saveRoute = (r: { id: number | null; name: string; active: boolean; sites: number[]; couriers: string[] }) =>
   call(client().rpc("save_route", { p_id: r.id, p_name: r.name, p_active: r.active, p_centre_ids: r.sites, p_couriers: r.couriers }), "Saving route") as Promise<number>;
+
+/* ---------- email tracking ---------- */
+export interface EmailItem {
+  id: number; r_number: string; acc_number: string | null; collection: string | null; entered: string | null;
+  status: "open" | "worked" | "removed" | "cleared"; duplicate_flag: boolean; times_flagged: number;
+  first_batch_id: number | null; last_batch_id: number | null; worked_by: string | null; worked_at: string | null;
+  flagged_at: string | null; removed_by: string | null; removed_at: string | null; cleared_at: string | null;
+}
+export interface EmailBatch {
+  id: number; file_name: string | null; source: string | null; run_date: string | null; mode: "full" | "partial";
+  uploaded_by: string; uploaded_at: string; row_count: number; stats: Record<string, number> | null; undone_at: string | null;
+}
+export async function loadEmailTracking() {
+  const since = new Date(Date.now() - 30 * 86400e3).toISOString();
+  const [items, batches] = await Promise.all([
+    fetchAll<EmailItem>("email_items", "*", "id").then((all) => all.filter((i) => i.status !== "cleared" || (i.cleared_at || "") >= since)),
+    call(client().from("email_batches").select("*").order("id", { ascending: false }).limit(60), "Uploads") as Promise<EmailBatch[]>,
+  ]);
+  return { items, batches };
+}
+export const emailApplyUpload = (fileName: string, source: string, runDate: string | null, mode: "full" | "partial",
+  rows: { r_number: string; acc_number: string; collection: string; entered: string }[]) =>
+  call(client().rpc("email_apply_upload", { p_file_name: fileName, p_source: source, p_run_date: runDate, p_mode: mode, p_rows: rows }), "Saving upload") as Promise<Record<string, number>>;
+export const emailUndoUpload = () => call(client().rpc("email_undo_upload"), "Undo upload");
+export const emailMarkWorked = (ids: number[]) => call(client().rpc("email_mark_worked", { p_ids: ids }), "Marking worked") as Promise<number>;
+export const emailUndoWorked = (id: number) => call(client().rpc("email_undo_worked", { p_id: id }), "Undo");
+export const emailMarkRemoved = (ids: number[]) => call(client().rpc("email_mark_removed", { p_ids: ids }), "Marking removed") as Promise<number>;
+export const emailUndoRemoved = (id: number) => call(client().rpc("email_undo_removed", { p_id: id }), "Undo");
+export function subscribeEmail(onChange: () => void) {
+  const ch = client().channel("email-live")
+    .on("postgres_changes", { event: "*", schema: "public", table: "email_items" }, onChange)
+    .on("postgres_changes", { event: "*", schema: "public", table: "email_batches" }, onChange).subscribe();
+  return () => { client().removeChannel(ch); };
+}

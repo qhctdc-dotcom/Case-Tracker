@@ -1,7 +1,7 @@
 // Service worker: makes the tracker installable and lets it open quickly.
 // It never caches Supabase data: only this site's own files are handled, and
 // pages are always fetched fresh when online so new versions appear at once.
-const CACHE = "pat-shell-v1";
+const CACHE = "pat-shell-v2";
 
 self.addEventListener("install", () => self.skipWaiting());
 self.addEventListener("activate", (event) => {
@@ -31,8 +31,8 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  // Built files have unique names per version, so they can be cached safely
-  if (url.pathname.startsWith("/assets/") || url.pathname.startsWith("/icons/")) {
+  // Built files have unique names per version, and the OCR engine rarely changes, so they can be cached
+  if (url.pathname.startsWith("/assets/") || url.pathname.startsWith("/icons/") || url.pathname.startsWith("/ocr/")) {
     event.respondWith((async () => {
       const hit = await caches.match(req);
       if (hit) return hit;

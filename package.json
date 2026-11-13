@@ -7,13 +7,18 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "format": "oxfmt"
+    "format": "oxfmt",
+    "prebuild": "node scripts/copy-ocr.mjs",
+    "predev": "node scripts/copy-ocr.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.117.1",
+    "pdfjs-dist": "^4.10.38",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "zxing-wasm": "^3.1.4"
+    "tesseract.js": "^5.1.1",
+    "zxing-wasm": "^3.1.4",
+    "@tesseract.js-data/eng": "^1.0.0"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.0.0",

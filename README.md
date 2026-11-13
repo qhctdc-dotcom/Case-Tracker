@@ -15,17 +15,18 @@ A shared web tool that follows laboratory samples from outside collection centre
 3. [Sample collection and reception](#sample-collection-and-reception)
 4. [Report delivery (GHA-POSTF001)](#report-delivery-gha-postf001)
 5. [Wall display (TV)](#wall-display-tv)
-6. [How the tracker decides things](#how-the-tracker-decides-things)
-7. [Roles and permissions](#roles-and-permissions)
-8. [Setting it up from scratch](#setting-it-up-from-scratch)
-9. [Configuration](#configuration)
-10. [Project structure](#project-structure)
-11. [Database overview](#database-overview)
-12. [Security and data protection](#security-and-data-protection)
-13. [Backups, archiving and housekeeping](#backups-archiving-and-housekeeping)
-14. [Troubleshooting](#troubleshooting)
-15. [Known limitations](#known-limitations)
-16. [Local development](#local-development)
+6. [Email tracking](#email-tracking)
+7. [How the tracker decides things](#how-the-tracker-decides-things)
+8. [Roles and permissions](#roles-and-permissions)
+9. [Setting it up from scratch](#setting-it-up-from-scratch)
+10. [Configuration](#configuration)
+11. [Project structure](#project-structure)
+12. [Database overview](#database-overview)
+13. [Security and data protection](#security-and-data-protection)
+14. [Backups, archiving and housekeeping](#backups-archiving-and-housekeeping)
+15. [Troubleshooting](#troubleshooting)
+16. [Known limitations](#known-limitations)
+17. [Local development](#local-development)
 
 ---
 
@@ -255,6 +256,33 @@ The screen keeps the display awake, refreshes itself every 2 minutes as a safety
 
 ---
 
+## Email tracking
+
+Tracks requisitions for the **MDS-LANCET LABORATORIES-EMAIL** account from the daily Meditech *Doctor's Patient Search* report: what needs working, what has been worked, and worked requisitions that are still in Meditech the next day (**duplicates to remove**). Only the Req #, Acc # and the two dates are stored; **patient names are never stored**. Rows for other accounts in the report are ignored.
+
+### Each day
+
+1. **Emails → Upload today's report**, and choose the file:
+   - a **Meditech file** (PDF saved from Meditech, or a text file): read exactly, in a second or two;
+   - a **scanned printout** (PDF from the scanner): read by OCR on the computer, about 10 seconds a page. Nothing is sent anywhere for reading.
+2. The **Check this upload** window shows what will change: new, still to work, **already worked and therefore flagged for duplicate removal**, and no longer in the report (cleared).
+   - For scans, any row whose Req # wasn't printed clearly is shown with a picture of that line (from the Req # column, so no names). Compare, correct the number if needed, and tick **Correct**, or **Leave out**. All such rows must be resolved before saving.
+3. Choose **Apply full report** (today's complete report) or **Add / update only** (part of a report; nothing is cleared). A warning appears if a large share of requisitions would be cleared.
+
+### During the day
+
+- **To work**: requisitions in the latest report not yet worked, marked *New today* or *Carried over*. Tick them (or **Select all**) and **Mark as worked**, or use **Worked** on a row.
+- **Flagged for removal**: requisitions already worked but still in the latest report. Remove the duplicates in Meditech, then **Mark as removed**. **Copy all Req #s** copies the list to paste into Meditech. A removed requisition that appears again is flagged again (with a *2× flagged* label).
+- **Worked**: what has been worked or removed, with who and when. **Undo** puts one back.
+- **Uploads**: every upload with its counts. **Undo it** (next to *Last upload*) reverses the most recent upload completely.
+- **Export (CSV)** on each list.
+
+### How requisitions are matched
+
+Only on the **Req #**. The Acc # is stored for reference but never used for matching, because the same Acc # can appear on different requisitions in the report. On scans, the Req # is read by OCR: in testing on a real report, 102 of 104 were read correctly and the other two were both flagged for checking. If a scan is poor, upload the Meditech file instead.
+
+---
+
 ## How the tracker decides things
 
 ### Department of a test
@@ -294,6 +322,7 @@ More frequent pastes mean fewer *Unclear* cases and tighter delay ranges. The re
 | Clear all tracked cases | | | ✓ |
 | Collect samples by phone on assigned routes; emergency collections at any site | ✓ | ✓ | ✓ |
 | Create courier routes and assign couriers | | | ✓ |
+| Email tracking: upload reports, mark worked / removed, undo uploads | | ✓ | ✓ |
 | Receive samples at pre-analytical, undo a receipt | | ✓ | ✓ |
 | View and check pickup photos (Samples → Pickup photos) | | ✓ | ✓ |
 | Manage centres, photo retention and transit alert time | | | ✓ |
@@ -314,7 +343,7 @@ You need free accounts on **Supabase**, **GitHub** and **Render**.
 1. Create a project (the London region is closest to West Africa). Save the database password somewhere safe.
 2. **SQL Editor → New query**: paste and run `supabase/01_database_setup.sql`. The final result should list 11 tables, all with `rls_enabled = true`.
 3. **SQL Editor → New query**: paste and run `supabase/02_first_admin_setup.sql`.
-4. **SQL Editor → New query**: run, one at a time, `supabase/03_sample_transport.sql` (couriers, centres, samples and the private `sample-photos` bucket; ends with *sample transport installed*), `supabase/04_fix_table_permissions.sql` (ends with *table permissions fixed*) `supabase/05_report_delivery.sql` (report delivery sheets; ends with *report delivery installed*) and `supabase/06_report_release.sql` (releasing reports before pick-up; ends with *report release installed*) `supabase/07_wall_display.sql` (TV accounts; ends with *wall display installed*) and `supabase/08_courier_routes.sql` (courier routes and emergency collections; ends with *courier routes installed*). All are safe to run again.
+4. **SQL Editor → New query**: run, one at a time, `supabase/03_sample_transport.sql` (couriers, centres, samples and the private `sample-photos` bucket; ends with *sample transport installed*), `supabase/04_fix_table_permissions.sql` (ends with *table permissions fixed*) `supabase/05_report_delivery.sql` (report delivery sheets; ends with *report delivery installed*) and `supabase/06_report_release.sql` (releasing reports before pick-up; ends with *report release installed*) `supabase/07_wall_display.sql` (TV accounts; ends with *wall display installed*) `supabase/08_courier_routes.sql` (courier routes and emergency collections; ends with *courier routes installed*) and `supabase/09_email_tracking.sql` (email tracking; ends with *email tracking installed*). All are safe to run again.
 5. **Authentication → Sign In / Providers**: switch **off** "Allow new users to sign up". Leave the Email provider enabled.
 
 ### 2. The `manage-staff` Edge Function
@@ -342,7 +371,7 @@ Open the Render address. Because nobody exists yet, the app shows **Create the f
 
 ### 5. Upgrading an existing installation
 
-1. Run any of `supabase/03_sample_transport.sql`, `04_fix_table_permissions.sql`, `05_report_delivery.sql`, `06_report_release.sql`, `07_wall_display.sql` and `08_courier_routes.sql` not yet run, in that order, in the SQL Editor.
+1. Run any of `supabase/03_sample_transport.sql`, `04_fix_table_permissions.sql`, `05_report_delivery.sql`, `06_report_release.sql`, `07_wall_display.sql`, `08_courier_routes.sql` and `09_email_tracking.sql` not yet run, in that order, in the SQL Editor.
 2. Redeploy the `manage-staff` Edge Function with the current `supabase/functions/manage-staff/index.ts` (it adds the Courier role and photo clean-up). Keep **Verify JWT** off.
 3. Push the updated code to GitHub so Render redeploys.
 
@@ -370,6 +399,7 @@ Never put the **secret** key (`sb_secret_…` or `service_role`) in Render, the 
 ```
 index.html                  Page shell
 public/                     App icons, manifest.json and sw.js (make the tracker installable)
+scripts/copy-ocr.mjs        Copies the OCR engine into public/ocr before each build
 vite.config.ts              Build configuration
 render.yaml                 Render blueprint (optional)
 package.json / package-lock.json
@@ -384,6 +414,7 @@ src/
     defaults.ts             Built-in A-List and department dictionaries
     display.ts              Per-computer display settings
     formTemplate.ts         Document-control details printed on GHA-POSTF001
+    emailReport.ts          Reads the Meditech report (digital text or OCR of scans); EMAIL account rows only
     barcode.ts              Reads barcodes from photos on the phone; shrinks photos for upload
   components/
     AuthScreen.tsx          First-admin setup and sign-in
@@ -400,6 +431,7 @@ src/
     DeliveriesView.tsx      Lab view of delivery sheets: review, print, export
     ReleaseView.tsx         Post-analytical release of reports, waiting and returned lists
     WallDisplay.tsx         TV screen: incoming samples by centre, live
+    EmailTrackingView.tsx   Email tracking: upload, review, to work, flagged, worked, uploads
     PodForm.tsx             Printable GHA-POSTF001 layout
     Signature.tsx           Signature pad and signature display
     StaffView.tsx           Staff accounts (admins)
@@ -414,6 +446,7 @@ supabase/
   06_report_release.sql     Releasing reports before courier pick-up; returned reports
   07_wall_display.sql       Read-only wall display (TV) accounts
   08_courier_routes.sql     Courier routes, route assignments, emergency collections
+  09_email_tracking.sql     Email tracking: uploads, requisitions, worked / flagged / removed, undo
   functions/manage-staff/index.ts   Edge Function for staff accounts
   optional_add_staff_by_sql.sql     Manual alternative to the Staff tab
 ```
@@ -438,6 +471,7 @@ supabase/
 | `delivery_sheets` | One GHA-POSTF001 sheet: courier and signature, location, department, pick-up, closed, reviewed by |
 | `report_releases` | Each release of a report: R#, destination, who released it and when, status (released, picked up, delivered, returned, withdrawn) |
 | `report_deliveries` | One report on a sheet: R#, client, status (D/ND/CU/C), receiver name and signature, time, reason |
+| `email_batches`, `email_items`, `email_batch_changes` | Email tracking uploads; one row per Req # with status (open, worked, removed, cleared) and duplicate flag; undo history |
 | `activity_log` | Undo, dictionary replacements, staff changes, imports, archives, clear-all |
 
 Department splits are worked out when the page loads, from the current dictionary, so editing the dictionary never rewrites stored data. All writes go through database functions (`apply_paste`, `undo_last_paste`, `replace_keywords`, and so on) that check the caller's role; a lock stops two simultaneous pastes from interfering.
@@ -485,6 +519,9 @@ Department splits are worked out when the page loads, from the current dictionar
 | Courier's phone doesn't open the camera | The site must be opened over **https** (Render addresses are). Allow camera access for the browser in the phone's settings. |
 | "No barcode could be read" | Retake closer, flatter and in better light, with fewer tubes per photo; or type the number. |
 | Scans at reception do nothing | Click once on the Samples page so the browser window has focus; the scan box then takes focus automatically. Check the scanner is set to send Enter after each code. |
+| "Couldn't load email tracking" | Run `supabase/09_email_tracking.sql`. |
+| "No MDS-LANCET LABORATORIES-EMAIL rows found" | The file isn't the Doctor's Patient Search report, or that account isn't in it. For scans, make sure the pages are straight and the *Doctor :* line is visible. |
+| Reading a scan is slow or stops | It takes about 10 seconds a page; keep the window open. Very faint or skewed scans read poorly; rescan at 200 dpi or more, or use the Meditech file. |
 | "Couldn't load deliveries" | Run `supabase/05_report_delivery.sql`. |
 | "Couldn't load released reports" | Run `supabase/06_report_release.sql`. |
 | Wall display shows *Loading…* or the sign-in page | Check the TV computer's network; sign in again with the display account. If it says the login isn't on the staff list, run `supabase/07_wall_display.sql` and check the account's role is *Wall display (TV)*. |
