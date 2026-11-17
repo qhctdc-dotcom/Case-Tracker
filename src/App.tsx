@@ -259,7 +259,7 @@ export default function App() {
         {tab === "tracker" && <TrackerView slices={slices} now={now} lastPaste={lastPaste} onOpenPaste={() => setPasteOpen(true)} />}
         {tab === "samples" && <ReceptionView toast={toast} />}
         {tab === "deliveries" && <DeliveriesView toast={toast} />}
-        {tab === "emails" && <EmailTrackingView toast={toast} />}
+        {tab === "emails" && <EmailTrackingView toast={toast} isAdmin={isAdmin} />}
         {tab === "report" && <ReportView slices={slices} pasteTimes={snap.pastes.map((p) => p.at)} dicts={dicts} settings={snap.settings} onError={(m) => toast(m, "err")} />}
         {tab === "settings" && <SettingsView snap={snap} dicts={dicts} slices={slices} isAdmin={isAdmin} refresh={refresh} toast={toast} />}
         {tab === "staff" && isAdmin && <StaffView me={me} />}

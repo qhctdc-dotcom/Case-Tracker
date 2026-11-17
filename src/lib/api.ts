@@ -386,7 +386,7 @@ export async function loadEmailTracking() {
   const since = new Date(Date.now() - 30 * 86400e3).toISOString();
   const [items, batches] = await Promise.all([
     fetchAll<EmailItem>("email_items", "*", "id").then((all) => all.filter((i) => i.status !== "cleared" || (i.cleared_at || "") >= since)),
-    call(client().from("email_batches").select("*").order("id", { ascending: false }).limit(60), "Uploads") as Promise<EmailBatch[]>,
+    call(client().from("email_batches").select("*").order("id", { ascending: false }).limit(1000), "Uploads") as Promise<EmailBatch[]>,
   ]);
   return { items, batches };
 }
@@ -403,4 +403,17 @@ export function subscribeEmail(onChange: () => void) {
     .on("postgres_changes", { event: "*", schema: "public", table: "email_items" }, onChange)
     .on("postgres_changes", { event: "*", schema: "public", table: "email_batches" }, onChange).subscribe();
   return () => { client().removeChannel(ch); };
+}
+
+export interface EmailAuditRow { id: number; at: string; actor: string; action: string; r_number: string | null; batch_id: number | null; details: Record<string, any> | null }
+/** Audit trail (admins only), newest first, between two dates (inclusive). */
+export async function loadEmailAudit(fromIso: string, toIso: string) {
+  const out: EmailAuditRow[] = [];
+  for (let from = 0; ; from += 1000) {
+    const page = (await call(client().from("email_audit").select("*").gte("at", fromIso).lt("at", toIso)
+      .order("id", { ascending: false }).range(from, from + 999), "Audit trail")) as EmailAuditRow[];
+    out.push(...page);
+    if (page.length < 1000 || out.length >= 20000) break;
+  }
+  return out;
 }

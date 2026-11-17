@@ -271,10 +271,12 @@ Tracks requisitions for the **MDS-LANCET LABORATORIES-EMAIL** account from the d
 
 ### During the day
 
-- **To work**: requisitions in the latest report not yet worked, marked *New today* or *Carried over*. Tick them (or **Select all**) and **Mark as worked**, or use **Worked** on a row.
+- **To work**: requisitions first seen in the latest upload and not yet worked. Tick them (or **Select all**) and **Mark as worked**, or use **Worked** on a row.
+- **Pending**: requisitions from **earlier lists** that still have not been worked, oldest first, with the date of the list, how many days it has been pending and **who uploaded it**. A requisition leaves Pending as soon as it is marked worked (or when it is no longer in a full report).
 - **Flagged for removal**: requisitions already worked but still in the latest report. Remove the duplicates in Meditech, then **Mark as removed**. **Copy all Req #s** copies the list to paste into Meditech. A removed requisition that appears again is flagged again (with a *2× flagged* label).
 - **Worked**: what has been worked or removed, with who and when. **Undo** puts one back.
 - **Uploads**: every upload with its counts. **Undo it** (next to *Last upload*) reverses the most recent upload completely.
+- **Audit trail** (admins only): every upload, undo, requisition added, worked, flagged, removed and cleared, with who and when. Filter by dates, Req #, person or action; click a Req # to see its full history; **Export (CSV)**. It is recorded automatically and cannot be edited or deleted.
 - **Export (CSV)** on each list.
 
 ### How requisitions are matched
@@ -343,7 +345,7 @@ You need free accounts on **Supabase**, **GitHub** and **Render**.
 1. Create a project (the London region is closest to West Africa). Save the database password somewhere safe.
 2. **SQL Editor → New query**: paste and run `supabase/01_database_setup.sql`. The final result should list 11 tables, all with `rls_enabled = true`.
 3. **SQL Editor → New query**: paste and run `supabase/02_first_admin_setup.sql`.
-4. **SQL Editor → New query**: run, one at a time, `supabase/03_sample_transport.sql` (couriers, centres, samples and the private `sample-photos` bucket; ends with *sample transport installed*), `supabase/04_fix_table_permissions.sql` (ends with *table permissions fixed*) `supabase/05_report_delivery.sql` (report delivery sheets; ends with *report delivery installed*) and `supabase/06_report_release.sql` (releasing reports before pick-up; ends with *report release installed*) `supabase/07_wall_display.sql` (TV accounts; ends with *wall display installed*) `supabase/08_courier_routes.sql` (courier routes and emergency collections; ends with *courier routes installed*) and `supabase/09_email_tracking.sql` (email tracking; ends with *email tracking installed*). All are safe to run again.
+4. **SQL Editor → New query**: run, one at a time, `supabase/03_sample_transport.sql` (couriers, centres, samples and the private `sample-photos` bucket; ends with *sample transport installed*), `supabase/04_fix_table_permissions.sql` (ends with *table permissions fixed*) `supabase/05_report_delivery.sql` (report delivery sheets; ends with *report delivery installed*) and `supabase/06_report_release.sql` (releasing reports before pick-up; ends with *report release installed*) `supabase/07_wall_display.sql` (TV accounts; ends with *wall display installed*) `supabase/08_courier_routes.sql` (courier routes and emergency collections; ends with *courier routes installed*) and `supabase/09_email_tracking.sql` (email tracking; ends with *email tracking installed*) `supabase/11_email_audit.sql` (email audit trail; ends with *email audit installed*) and, optionally, `supabase/10_load_routes.sql` (loads the 11 courier routes and their 98 sites in order, plus 29 branches and depots; ends with a table of routes and site counts). All are safe to run again.
 5. **Authentication → Sign In / Providers**: switch **off** "Allow new users to sign up". Leave the Email provider enabled.
 
 ### 2. The `manage-staff` Edge Function
@@ -447,6 +449,8 @@ supabase/
   07_wall_display.sql       Read-only wall display (TV) accounts
   08_courier_routes.sql     Courier routes, route assignments, emergency collections
   09_email_tracking.sql     Email tracking: uploads, requisitions, worked / flagged / removed, undo
+  11_email_audit.sql        Email tracking audit trail (admins only)
+  10_load_routes.sql        Loads 11 courier routes, 98 route sites and 29 branches/depots (safe to re-run)
   functions/manage-staff/index.ts   Edge Function for staff accounts
   optional_add_staff_by_sql.sql     Manual alternative to the Staff tab
 ```

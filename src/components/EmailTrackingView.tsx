@@ -4,7 +4,8 @@ import { EMAIL_ACCOUNT_LABEL, readReport, type ParsedReport, type ReportRow } fr
 import { fmtIso } from "../lib/tracker";
 import { Badge, Button, C, Modal, Note, Stat, csvCell, downloadFile, inputBase, stamp, tint } from "./ui";
 
-type Tab = "work" | "flagged" | "worked" | "history";
+type Tab = "work" | "pending" | "flagged" | "worked" | "history" | "audit";
+type ListKey = "work" | "pending" | "flagged" | "worked";
 type CheckState = Record<number, { r: string; acc: string; ok: boolean; skip: boolean }>;
 
 /** What an upload would do, compared with what is stored (same rules as the database). */
@@ -27,7 +28,7 @@ function plan(rows: { r_number: string }[], items: api.EmailItem[], mode: "full"
   return p;
 }
 
-export default function EmailTrackingView({ toast }: { toast: (m: string, t?: "ok" | "err") => void }) {
+export default function EmailTrackingView({ toast, isAdmin }: { toast: (m: string, t?: "ok" | "err") => void; isAdmin: boolean }) {
   const [data, setData] = useState<Awaited<ReturnType<typeof api.loadEmailTracking>> | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("work");
@@ -106,18 +107,24 @@ export default function EmailTrackingView({ toast }: { toast: (m: string, t?: "o
 
   /* ---------- lists ---------- */
   const today = new Date(); today.setHours(0, 0, 0, 0);
+  const latest = data?.batches.find((b) => !b.undone_at) || null;
+  const latestId = latest?.id ?? null;
+  const batchMap = useMemo(() => new Map((data?.batches || []).map((b) => [b.id, b])), [data]);
   const lists = useMemo(() => {
     const items = data?.items || [];
     const q = search.replace(/\D/g, "");
     const m = (i: api.EmailItem) => !q || i.r_number.includes(q) || (i.acc_number || "").includes(q);
     return {
-      work: items.filter((i) => i.status === "open" && m(i)).sort((a, b) => (a.collection || "").localeCompare(b.collection || "")),
+      // Today's list: not worked, first seen in the latest upload
+      work: items.filter((i) => i.status === "open" && i.first_batch_id === latestId && m(i)).sort((a, b) => (a.collection || "").localeCompare(b.collection || "")),
+      // Pending: not worked, carried over from an earlier upload (oldest first). Leaves this list once worked.
+      pending: items.filter((i) => i.status === "open" && i.first_batch_id !== latestId && m(i))
+        .sort((a, b) => (a.first_batch_id ?? 0) - (b.first_batch_id ?? 0) || (a.collection || "").localeCompare(b.collection || "")),
       flagged: items.filter((i) => i.duplicate_flag && m(i)).sort((a, b) => (a.flagged_at || "").localeCompare(b.flagged_at || "")),
       worked: items.filter((i) => ((i.status === "worked" && !i.duplicate_flag) || i.status === "removed") && m(i))
         .sort((a, b) => (b.removed_at || b.worked_at || "").localeCompare(a.removed_at || a.worked_at || "")),
     };
-  }, [data, search]);
-  const latest = data?.batches.find((b) => !b.undone_at) || null;
+  }, [data, search, latestId]);
   const workedToday = (data?.items || []).filter((i) => i.worked_at && new Date(i.worked_at) >= today).length;
 
   const selected = Object.keys(sel).filter((k) => sel[Number(k)]).map(Number);
@@ -132,10 +139,14 @@ export default function EmailTrackingView({ toast }: { toast: (m: string, t?: "o
     const txt = lists.flagged.map((i) => i.r_number).join("\n");
     navigator.clipboard?.writeText(txt).then(() => toast(`${lists.flagged.length} Req #s copied.`), () => toast("Couldn't copy; use Export instead.", "err"));
   }
-  function exportCsv(which: "work" | "flagged" | "worked") {
-    const rows = [["Req #", "Acc #", "Collected", "Entered", "Status", "Flagged for removal", "Times flagged", "Worked by", "Worked at", "Removed by", "Removed at"].join(",")];
-    lists[which].forEach((i) => rows.push([i.r_number, i.acc_number || "", i.collection || "", i.entered || "", i.status, i.duplicate_flag ? "Yes" : "",
-      i.times_flagged, csvCell(i.worked_by), fmtIso(i.worked_at), csvCell(i.removed_by), fmtIso(i.removed_at)].join(",")));
+  function exportCsv(which: ListKey) {
+    const rows = [["Req #", "Acc #", "Collected", "Entered", "First uploaded", "Uploaded by", "Days pending", "Status", "Flagged for removal", "Times flagged", "Worked by", "Worked at", "Removed by", "Removed at"].join(",")];
+    lists[which].forEach((i) => {
+      const b = i.first_batch_id != null ? batchMap.get(i.first_batch_id) : undefined;
+      rows.push([i.r_number, i.acc_number || "", i.collection || "", i.entered || "", fmtIso(b?.uploaded_at), csvCell(b?.uploaded_by),
+        i.status === "open" && b ? daysSince(b.uploaded_at) : "", i.status, i.duplicate_flag ? "Yes" : "",
+        i.times_flagged, csvCell(i.worked_by), fmtIso(i.worked_at), csvCell(i.removed_by), fmtIso(i.removed_at)].join(","));
+    });
     downloadFile(`email_tracking_${which}_${stamp()}.csv`, rows.join("\n"), "text/csv;charset=utf-8;");
   }
 
@@ -160,30 +171,42 @@ export default function EmailTrackingView({ toast }: { toast: (m: string, t?: "o
       </div>
 
       <div className="flex gap-8 sm:gap-12 flex-wrap mb-5">
-        <Stat label="To work" value={lists.work.length} color={lists.work.length ? C.accent : C.ink} />
+        <Stat label="To work (today's list)" value={lists.work.length} color={lists.work.length ? C.accent : C.ink} />
+        <Stat label="Pending from earlier lists" value={lists.pending.length} color={lists.pending.length ? C.warning : C.ink} />
         <Stat label="Flagged for duplicate removal" value={lists.flagged.length} color={lists.flagged.length ? C.danger : C.ink} />
         <Stat label="Worked today" value={workedToday} color={C.success} />
       </div>
 
       <div className="flex flex-wrap gap-2 items-center mb-4">
         <div role="tablist" className="inline-flex rounded-lg border overflow-hidden" style={{ borderColor: C.line }}>
-          {([["work", `To work (${lists.work.length})`], ["flagged", `Flagged for removal (${lists.flagged.length})`], ["worked", "Worked"], ["history", "Uploads"]] as const).map(([k, label]) => (
+          {([["work", `To work (${lists.work.length})`], ["pending", `Pending (${lists.pending.length})`], ["flagged", `Flagged for removal (${lists.flagged.length})`], ["worked", "Worked"], ["history", "Uploads"],
+            ...(isAdmin ? [["audit", "Audit trail"]] : [])] as [Tab, string][]).map(([k, label]) => (
             <button key={k} role="tab" aria-selected={tab === k} onClick={() => setTab(k)} className="px-4 py-2 text-sm cursor-pointer"
               style={{ background: tab === k ? (k === "flagged" && lists.flagged.length ? C.danger : C.ink) : C.surface, color: tab === k ? C.surface : C.ink, fontWeight: tab === k ? 600 : 400 }}>
               {label}
             </button>
           ))}
         </div>
-        {tab !== "history" && <input className={`${inputBase} w-56`} placeholder="Find Req # or Acc #" value={search} onChange={(e) => setSearch(e.target.value)} aria-label="Find" />}
-        {tab !== "history" && <Button tone="quiet" className="ml-auto" onClick={() => exportCsv(tab)}>Export (CSV)</Button>}
+        {tab !== "history" && tab !== "audit" && <input className={`${inputBase} w-56`} placeholder="Find Req # or Acc #" value={search} onChange={(e) => setSearch(e.target.value)} aria-label="Find" />}
+        {tab !== "history" && tab !== "audit" && <Button tone="quiet" className="ml-auto" onClick={() => exportCsv(tab)}>Export (CSV)</Button>}
       </div>
 
       {tab === "work" && (
         <ItemTable items={lists.work} sel={sel} setSel={setSel} latestBatch={latest?.id ?? null} mode="work"
           bulk={selected.length > 0 && <Button tone="primary" onClick={() => markWorked(selected)}>Mark {selected.length} as worked</Button>}
           rowAction={(i) => <Button onClick={() => markWorked([i.id])}>Worked</Button>}
-          empty="Nothing waiting. Upload today's report to see what needs working." />
+          empty={lists.pending.length ? `Today's list is done. ${lists.pending.length} pending from earlier lists: see the Pending tab.` : "Nothing waiting. Upload today's report to see what needs working."} />
       )}
+      {tab === "pending" && (
+        <>
+          <Note tone="warn">Requisitions from <b>earlier lists</b> that have not been worked yet, oldest first, with the date of the list and who uploaded it. Each one leaves this tab as soon as it is marked worked.</Note>
+          <ItemTable items={lists.pending} sel={sel} setSel={setSel} latestBatch={latestId} mode="pending" batchMap={batchMap}
+            bulk={selected.length > 0 && <Button tone="primary" onClick={() => markWorked(selected)}>Mark {selected.length} as worked</Button>}
+            rowAction={(i) => <Button onClick={() => markWorked([i.id])}>Worked</Button>}
+            empty="Nothing pending from earlier lists." />
+        </>
+      )}
+      {tab === "audit" && isAdmin && <AuditTrail toast={toast} />}
       {tab === "flagged" && (
         <>
           <Note tone="warn">These requisitions were already worked but are <b>still in the latest report</b>. Remove the duplicates in Meditech, then mark them here.</Note>
@@ -316,8 +339,11 @@ export default function EmailTrackingView({ toast }: { toast: (m: string, t?: "o
   );
 }
 
-function ItemTable({ items, sel, setSel, mode, bulk, rowAction, empty, latestBatch }: {
-  items: api.EmailItem[]; sel: Record<number, boolean>; setSel: (s: Record<number, boolean>) => void; mode: "work" | "flagged" | "worked";
+const daysSince = (iso: string) => Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 86400e3));
+
+function ItemTable({ items, sel, setSel, mode, bulk, rowAction, empty, latestBatch, batchMap }: {
+  items: api.EmailItem[]; sel: Record<number, boolean>; setSel: (s: Record<number, boolean>) => void; mode: "work" | "pending" | "flagged" | "worked";
+  batchMap?: Map<number, api.EmailBatch>;
   bulk?: React.ReactNode; rowAction: (i: api.EmailItem) => React.ReactNode; empty: string; latestBatch: number | null;
 }) {
   const selectable = mode !== "worked";
@@ -337,7 +363,8 @@ function ItemTable({ items, sel, setSel, mode, bulk, rowAction, empty, latestBat
           <table className="w-full text-sm">
             <thead><tr className="text-left text-xs text-ink-3">
               {selectable && <th className="px-4 py-2 w-8"></th>}
-              {["Req #", "Acc #", "Collected", "Entered", mode === "work" ? "On the list" : mode === "flagged" ? "Worked" : "Done", mode === "flagged" ? "Flagged" : "", ""].map((h, i) =>
+              {["Req #", "Acc #", "Collected", "Entered", mode === "work" ? "On the list" : mode === "pending" ? "Pending since (list uploaded)" : mode === "flagged" ? "Worked" : "Done",
+                mode === "flagged" ? "Flagged" : mode === "pending" ? "Uploaded by" : "", ""].map((h, i) =>
                 <th key={i} className="px-3 py-2 font-medium">{h}</th>)}
             </tr></thead>
             <tbody>
@@ -350,12 +377,19 @@ function ItemTable({ items, sel, setSel, mode, bulk, rowAction, empty, latestBat
                   <td className="px-3 py-2 num text-ink-2">{i.entered}</td>
                   <td className="px-3 py-2 text-ink-2">
                     {mode === "work" && (i.first_batch_id === latestBatch ? <Badge color={C.accent}>New today</Badge> : <Badge color={C.warning}>Carried over</Badge>)}
+                    {mode === "pending" && (() => {
+                      const b = i.first_batch_id != null ? batchMap?.get(i.first_batch_id) : undefined;
+                      if (!b) return <span className="text-ink-3">Earlier list</span>;
+                      const d = daysSince(b.uploaded_at);
+                      return <><span className="num">{fmtIso(b.uploaded_at)}</span> <Badge color={d >= 3 ? C.danger : C.warning}>{d === 0 ? "today" : `${d} day${d === 1 ? "" : "s"}`}</Badge>
+                        {b.run_date && <span className="text-ink-3 text-xs"> report run {b.run_date}</span>}</>;
+                    })()}
                     {mode === "flagged" && <>{(i.worked_by || "").split("@")[0]}, <span className="num">{fmtIso(i.worked_at)}</span></>}
                     {mode === "worked" && (i.status === "removed"
                       ? <>Duplicate removed by {(i.removed_by || "").split("@")[0]}, <span className="num">{fmtIso(i.removed_at)}</span></>
                       : <>Worked by {(i.worked_by || "").split("@")[0]}, <span className="num">{fmtIso(i.worked_at)}</span></>)}
                   </td>
-                  <td className="px-3 py-2 text-ink-2">{mode === "flagged" && <>{i.times_flagged > 1 ? <Badge color={C.danger}>{i.times_flagged}× flagged</Badge> : "Since"} <span className="num">{fmtIso(i.flagged_at)}</span></>}</td>
+                  <td className="px-3 py-2 text-ink-2">{mode === "pending" && (() => { const b = i.first_batch_id != null ? batchMap?.get(i.first_batch_id) : undefined; return b ? b.uploaded_by.split("@")[0] : ""; })()}{mode === "flagged" && <>{i.times_flagged > 1 ? <Badge color={C.danger}>{i.times_flagged}× flagged</Badge> : "Since"} <span className="num">{fmtIso(i.flagged_at)}</span></>}</td>
                   <td className="px-3 py-2 text-right">{rowAction(i)}</td>
                 </tr>
               ))}
@@ -363,6 +397,99 @@ function ItemTable({ items, sel, setSel, mode, bulk, rowAction, empty, latestBat
           </table>
         </div>
       )}
+    </div>
+  );
+}
+
+/* ---------------- Audit trail (admins only) ---------------- */
+const ACTION_COLOR: Record<string, string> = {
+  "Uploaded report": C.accent, "Upload undone": C.danger, "Added from report": C.ink3, "Marked worked": C.success, "Worked undone": C.warning,
+  "Flagged for duplicate removal": C.danger, "Marked removed in Meditech": C.success, "Removal undone": C.warning,
+  "Cleared (no longer in report)": C.ink3, "Back in report": C.warning,
+};
+const dayInput = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
+function describe(r: api.EmailAuditRow): string {
+  const d = r.details || {};
+  if (r.action === "Uploaded report")
+    return `${d.file ?? ""} (${d.type === "scan" ? "scanned" : "Meditech file"}${d.mode === "partial" ? ", add only" : ""}${d.report_run ? `, run ${d.report_run}` : ""}): ${d.rows} rows, ${d.new} new, ${d.carried_over} carried over, ${d.flagged} flagged, ${d.cleared} cleared`;
+  if (r.action === "Upload undone") return `${d.file ?? ""}, uploaded by ${String(d.uploaded_by ?? "").split("@")[0]} at ${fmtIso(d.uploaded_at)}`;
+  if (r.action === "Flagged for duplicate removal" && d.times_flagged > 1) return `flagged ${d.times_flagged} times`;
+  if (r.action === "Cleared (no longer in report)" && d.was && d.was !== "open") return `was ${d.was}`;
+  if (r.action === "Cleared (no longer in report)") return "was not worked";
+  return "";
+}
+
+function AuditTrail({ toast }: { toast: (m: string, t?: "ok" | "err") => void }) {
+  const [from, setFrom] = useState(() => dayInput(new Date(Date.now() - 6 * 86400e3)));
+  const [to, setTo] = useState(() => dayInput(new Date()));
+  const [rows, setRows] = useState<api.EmailAuditRow[] | null>(null);
+  const [q, setQ] = useState("");
+  const [who, setWho] = useState("");
+  const [action, setAction] = useState("");
+  const [showAdded, setShowAdded] = useState(false);
+  const toastRef = useRef(toast); toastRef.current = toast;
+
+  useEffect(() => {
+    let live = true;
+    setRows(null);
+    const start = new Date(`${from}T00:00:00`), end = new Date(`${to}T00:00:00`); end.setDate(end.getDate() + 1);
+    api.loadEmailAudit(start.toISOString(), end.toISOString())
+      .then((r) => { if (live) setRows(r); })
+      .catch((e) => { if (live) { setRows([]); toastRef.current(`${e.message}. Has 11_email_audit.sql been run?`, "err"); } });
+    return () => { live = false; };
+  }, [from, to]);
+
+  const people = useMemo(() => [...new Set((rows || []).map((r) => r.actor))].sort(), [rows]);
+  const actions = useMemo(() => [...new Set((rows || []).map((r) => r.action))].sort(), [rows]);
+  const shown = useMemo(() => {
+    const d = q.replace(/\D/g, "");
+    return (rows || []).filter((r) => (!d || (r.r_number || "").includes(d)) && (!who || r.actor === who)
+      && (action ? r.action === action : showAdded || d || r.action !== "Added from report"));
+  }, [rows, q, who, action, showAdded]);
+
+  function exportCsv() {
+    const out = [["When", "Who", "Action", "Req #", "Upload #", "Details"].join(",")];
+    shown.forEach((r) => out.push([fmtIso(r.at), csvCell(r.actor), csvCell(r.action), r.r_number || "", r.batch_id ?? "", csvCell(describe(r))].join(",")));
+    downloadFile(`email_audit_${from}_to_${to}.csv`, out.join("\n"), "text/csv;charset=utf-8;");
+  }
+
+  return (
+    <div className="card overflow-hidden">
+      <div className="flex flex-wrap items-end gap-3 px-4 py-3 border-b" style={{ borderColor: C.line, background: C.raised }}>
+        <label className="text-xs text-ink-3">From<input type="date" className={`${inputBase} block mt-1`} value={from} max={to} onChange={(e) => e.target.value && setFrom(e.target.value)} /></label>
+        <label className="text-xs text-ink-3">To<input type="date" className={`${inputBase} block mt-1`} value={to} min={from} onChange={(e) => e.target.value && setTo(e.target.value)} /></label>
+        <label className="text-xs text-ink-3">Req #<input className={`${inputBase} block mt-1 w-40`} placeholder="Any" value={q} onChange={(e) => setQ(e.target.value)} /></label>
+        <label className="text-xs text-ink-3">Who<select className={`${inputBase} block mt-1`} value={who} onChange={(e) => setWho(e.target.value)}>
+          <option value="">Everyone</option>{people.map((p) => <option key={p} value={p}>{p}</option>)}</select></label>
+        <label className="text-xs text-ink-3">Action<select className={`${inputBase} block mt-1`} value={action} onChange={(e) => setAction(e.target.value)}>
+          <option value="">All actions</option>{actions.map((a) => <option key={a} value={a}>{a}</option>)}</select></label>
+        {!action && !q && <label className="flex items-center gap-1.5 text-sm text-ink-2 cursor-pointer pb-2">
+          <input type="checkbox" className="w-4 h-4" checked={showAdded} onChange={(e) => setShowAdded(e.target.checked)} /> Show each requisition added from a report</label>}
+        <Button tone="quiet" className="ml-auto" onClick={exportCsv} disabled={!shown.length}>Export (CSV)</Button>
+      </div>
+      {rows === null ? <p className="p-6 text-ink-3 text-sm">Loading…</p> : !shown.length ? <p className="p-6 text-ink-3 text-sm">Nothing recorded for these filters.</p> : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead><tr className="text-left text-xs text-ink-3">
+              {["When", "Who", "Action", "Req #", "Details"].map((h) => <th key={h} className="px-3 py-2 font-medium">{h}</th>)}
+            </tr></thead>
+            <tbody>
+              {shown.slice(0, 2000).map((r) => (
+                <tr key={r.id} className="border-t align-top" style={{ borderColor: C.line }}>
+                  <td className="px-3 py-2 num whitespace-nowrap">{fmtIso(r.at)}</td>
+                  <td className="px-3 py-2">{r.actor}</td>
+                  <td className="px-3 py-2"><Badge color={ACTION_COLOR[r.action] || C.ink2}>{r.action}</Badge></td>
+                  <td className="px-3 py-2 num font-semibold"><button className="cursor-pointer underline decoration-dotted" onClick={() => setQ(r.r_number || "")} title="Show this requisition's history">{r.r_number}</button></td>
+                  <td className="px-3 py-2 text-ink-2">{describe(r)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {shown.length > 2000 && <p className="px-4 py-3 text-xs text-ink-3">Showing the latest 2,000 of {shown.length}. Narrow the dates or use Export for all.</p>}
+        </div>
+      )}
+      <p className="px-4 py-2.5 text-xs text-ink-3 border-t" style={{ borderColor: C.line }}>Recorded automatically and cannot be edited or deleted. Only admins can see this tab.</p>
     </div>
   );
 }
