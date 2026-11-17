@@ -33,6 +33,14 @@ export default function CourierView({ me, toast }: { me: api.Me; toast: (m: stri
     finally { setLoading(false); }
   }, [me.email]);
   useEffect(() => { load(); }, [load]);
+  // Keep routes and collections up to date: when the app comes back to the screen, and every minute
+  useEffect(() => {
+    const onShow = () => { if (document.visibilityState === "visible") load(); };
+    document.addEventListener("visibilitychange", onShow);
+    window.addEventListener("focus", onShow);
+    const t = window.setInterval(() => { if (document.visibilityState === "visible") load(); }, 60_000);
+    return () => { document.removeEventListener("visibilitychange", onShow); window.removeEventListener("focus", onShow); clearInterval(t); };
+  }, [load]);
 
   const centreName = (id: number | null) => centres.find((c) => c.id === id)?.name || "Unknown site";
   const routeName = (id: number | null | undefined) => routes.find((r) => r.id === id)?.name || "";

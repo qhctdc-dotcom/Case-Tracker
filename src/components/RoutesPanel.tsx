@@ -13,6 +13,7 @@ export default function RoutesPanel({ isAdmin, toast }: { isAdmin: boolean; toas
   const [draft, setDraft] = useState<Draft | null>(null);
   const [addSite, setAddSite] = useState("");
   const [saving, setSaving] = useState(false);
+  const [moveCouriers, setMoveCouriers] = useState(true);
 
   async function load() {
     try {
@@ -28,6 +29,10 @@ export default function RoutesPanel({ isAdmin, toast }: { isAdmin: boolean; toas
 
   const centreName = (id: number) => centres.find((c) => c.id === id)?.name || "Unknown site";
   const courierName = (email: string) => couriers.find((c) => c.email === email)?.display_name || email.split("@")[0];
+  /** Other routes (in use) a courier is assigned to, besides the one being edited */
+  const otherRoutes = (email: string, exceptId: number | null) =>
+    (routes || []).filter((r) => r.id !== exceptId && r.active && r.couriers.includes(email));
+  const multi = couriers.map((c) => ({ c, rs: otherRoutes(c.email, null) })).filter((x) => x.rs.length > 1);
 
   function move(i: number, d: -1 | 1) {
     if (!draft) return;
@@ -42,7 +47,20 @@ export default function RoutesPanel({ isAdmin, toast }: { isAdmin: boolean; toas
     if (!draft.name.trim()) return toast("Give the route a name.", "err");
     if (!draft.sites.length) return toast("Add at least one site to the route.", "err");
     setSaving(true);
-    try { await api.saveRoute(draft); toast(`Route "${draft.name}" saved.`); setDraft(null); await load(); }
+    try {
+      await api.saveRoute(draft);
+      // A courier normally works one route: take the ticked couriers off their other routes
+      let moved = 0;
+      if (moveCouriers && draft.active) {
+        for (const r of routes || []) {
+          if (r.id === draft.id) continue;
+          const keep = r.couriers.filter((e) => !draft.couriers.includes(e));
+          if (keep.length !== r.couriers.length) { await api.saveRoute({ ...r, couriers: keep }); moved += r.couriers.length - keep.length; }
+        }
+      }
+      toast(`Route "${draft.name}" saved.${moved ? ` ${moved} courier assignment${moved === 1 ? "" : "s"} removed from other routes.` : ""}`);
+      setDraft(null); await load();
+    }
     catch (e: any) { toast(e.message, "err"); }
     finally { setSaving(false); }
   }
@@ -86,9 +104,16 @@ export default function RoutesPanel({ isAdmin, toast }: { isAdmin: boolean; toas
                 <input type="checkbox" className="w-4 h-4 accent-[var(--accent)]" checked={draft.couriers.includes(c.email)}
                   onChange={(e) => setDraft({ ...draft, couriers: e.target.checked ? [...draft.couriers, c.email] : draft.couriers.filter((x) => x !== c.email) })} />
                 {c.display_name || c.email}{!c.active && <span className="text-ink-3"> (deactivated)</span>}
+                {otherRoutes(c.email, draft.id).length > 0 && <span className="text-xs text-ink-3">(now on {otherRoutes(c.email, draft.id).map((r) => r.name).join(", ")})</span>}
               </label>
             ))}
           </div>
+          {draft.couriers.some((e) => otherRoutes(e, draft.id).length) && (
+            <label className="flex items-start gap-2 text-sm text-ink mb-4 cursor-pointer max-w-xl">
+              <input type="checkbox" className="w-4 h-4 mt-0.5 accent-[var(--accent)]" checked={moveCouriers} onChange={(e) => setMoveCouriers(e.target.checked)} />
+              <span><b>Move</b> the ticked couriers to this route only (take them off {[...new Set(draft.couriers.flatMap((e) => otherRoutes(e, draft.id).map((r) => r.name)))].join(", ")}). Untick to keep them on both.</span>
+            </label>
+          )}
 
           <label className="flex items-center gap-2 text-ink mb-4 cursor-pointer">
             <input type="checkbox" className="w-4 h-4 accent-[var(--accent)]" checked={draft.active} onChange={(e) => setDraft({ ...draft, active: e.target.checked })} />
@@ -101,6 +126,9 @@ export default function RoutesPanel({ isAdmin, toast }: { isAdmin: boolean; toas
         </div>
       )}
 
+      {multi.length > 0 && !draft && (
+        <Note tone="warn">{multi.map(({ c, rs }) => `${c.display_name || c.email} is on ${rs.length} routes (${rs.map((r) => r.name).join(", ")})`).join(". ")}. Couriers see every route they are on. Edit a route and untick a courier to take them off it.</Note>
+      )}
       {routes && !routes.length && !draft && <p className="text-sm text-ink-3">No routes yet.</p>}
       {routes && routes.length > 0 && (
         <ul>
@@ -112,7 +140,7 @@ export default function RoutesPanel({ isAdmin, toast }: { isAdmin: boolean; toas
                   <p className="text-sm text-ink-2">{r.sites.map(centreName).join(" → ") || "No sites"}</p>
                   <p className="text-sm text-ink-3">Couriers: {r.couriers.length ? r.couriers.map(courierName).join(", ") : "none assigned"}</p>
                 </div>
-                {isAdmin && <Button onClick={() => setDraft({ id: r.id, name: r.name, active: r.active, sites: [...r.sites], couriers: [...r.couriers] })}>Edit</Button>}
+                {isAdmin && <Button onClick={() => { setMoveCouriers(true); setDraft({ id: r.id, name: r.name, active: r.active, sites: [...r.sites], couriers: [...r.couriers] }); }}>Edit</Button>}
               </div>
             </li>
           ))}
