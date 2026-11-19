@@ -188,13 +188,30 @@ export interface SampleAuditRow {
   id: number; at: string; actor: string; actor_name: string | null; action: string;
   sample_id: number | null; barcode: string; r_number: string | null; details: Record<string, any> | null;
 }
+const auditError = (error: { message: string; code?: string }) => new Error(/sample_audit/.test(error.message) || error.code === "42P01"
+  ? "History isn't set up yet: run supabase/12_sample_receipt_audit.sql in Supabase"
+  : `Loading history: ${error.message}`);
+
 /** Permanent receipt history for one barcode, oldest first. */
 export async function loadSampleHistory(barcode: string): Promise<SampleAuditRow[]> {
   const { data, error } = await client().from("sample_audit").select("*").eq("barcode", barcode).order("at").order("id").limit(500);
-  if (error) throw new Error(/sample_audit/.test(error.message) || error.code === "42P01"
-    ? "History isn't set up yet: run supabase/12_sample_receipt_audit.sql in Supabase"
-    : `Loading history: ${error.message}`);
+  if (error) throw auditError(error);
   return data as SampleAuditRow[];
+}
+
+/** All receipt history events since local midnight `days - 1` days ago, newest first (at most 10 000). */
+export async function loadSampleAudit(days: number): Promise<{ rows: SampleAuditRow[]; truncated: boolean }> {
+  const since = new Date(); since.setHours(0, 0, 0, 0); since.setDate(since.getDate() - (days - 1));
+  const rows: SampleAuditRow[] = [];
+  const size = 1000, max = 10000;
+  for (let from = 0; from < max; from += size) {
+    const { data, error } = await client().from("sample_audit").select("*").gte("at", since.toISOString())
+      .order("at", { ascending: false }).order("id", { ascending: false }).range(from, from + size - 1);
+    if (error) throw auditError(error);
+    rows.push(...(data as SampleAuditRow[]));
+    if (!data || data.length < size) return { rows, truncated: false };
+  }
+  return { rows, truncated: true };
 }
 
 export const loadCentres = () =>

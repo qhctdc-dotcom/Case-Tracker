@@ -3,6 +3,7 @@ import * as api from "../lib/api";
 import { fmtIso, fmtTime, formatMinutes, norm } from "../lib/tracker";
 import { Badge, Button, C, Modal, Note, Stat, csvCell, downloadFile, inputBase, stamp, tint } from "./ui";
 import PhotoReview from "./PhotoReview";
+import SampleHistoryView, { SampleHistory } from "./SampleHistoryView";
 
 type Feedback = { tone: "ok" | "warn" | "err"; title: string; detail: string; sampleId?: number } | null;
 
@@ -22,48 +23,6 @@ function beep(kind: "ok" | "warn" | "err") {
   } catch { /* sound unavailable */ }
 }
 
-/** Permanent receipt history for one barcode (from sample_audit). */
-function SampleHistory({ barcode }: { barcode: string }) {
-  const [rows, setRows] = useState<api.SampleAuditRow[] | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-  useEffect(() => {
-    let live = true;
-    api.loadSampleHistory(barcode).then((r) => live && setRows(r)).catch((e) => live && setErr(e.message));
-    return () => { live = false; };
-  }, [barcode]);
-
-  if (err) return <Note tone="err">{err}</Note>;
-  if (!rows) return <p className="text-ink-3 text-sm">Loading…</p>;
-  if (!rows.length) return <p className="text-ink-3 text-sm">No history recorded for this barcode yet.</p>;
-
-  const colour = (a: string) => a.startsWith("Received") ? C.success : a.startsWith("Receipt undone") || a.startsWith("Removed") ? C.danger : C.accent;
-  const who = (r: api.SampleAuditRow) => r.actor_name || r.actor.split("@")[0];
-  const extra = (r: api.SampleAuditRow) => {
-    const d = r.details || {};
-    const bits: string[] = [];
-    if (d.centre) bits.push(`from ${d.centre}`);
-    if (r.action === "Received" && d.collected_by) bits.push(`collected by ${String(d.collected_by).split("@")[0]}`);
-    if (d.transit_minutes != null) bits.push(`${formatMinutes(Number(d.transit_minutes))} in transit`);
-    if (d.was_received_at) bits.push(`had been received by ${d.was_received_by_name || String(d.was_received_by || "").split("@")[0]} at ${fmtIso(d.was_received_at)}`);
-    if (d.backfilled) bits.push("recorded before history was switched on");
-    return bits.join(", ");
-  };
-
-  return (
-    <ol className="relative border-l-2 ml-2" style={{ borderColor: C.line }}>
-      {rows.map((r) => (
-        <li key={r.id} className="ml-4 pb-4 last:pb-0 relative">
-          <span className="absolute -left-[23px] top-1.5 w-3 h-3 rounded-full" style={{ background: colour(r.action) }} aria-hidden="true" />
-          <p className="text-sm"><Badge color={colour(r.action)}>{r.action}</Badge></p>
-          <p className="text-ink mt-1">by <span className="font-semibold">{who(r)}</span>{r.actor.includes("@") && <span className="text-ink-3 text-xs"> ({r.actor})</span>}</p>
-          <p className="num text-sm text-ink-2">{fmtIso(r.at)}</p>
-          {extra(r) && <p className="text-xs text-ink-3 mt-0.5">{extra(r)}</p>}
-        </li>
-      ))}
-    </ol>
-  );
-}
-
 export default function ReceptionView({ toast }: { toast: (m: string, t?: "ok" | "err") => void }) {
   const [data, setData] = useState<Awaited<ReturnType<typeof api.loadTransport>> | null>(null);
   const [loadErr, setLoadErr] = useState<string | null>(null);
@@ -75,7 +34,7 @@ export default function ReceptionView({ toast }: { toast: (m: string, t?: "ok" |
   const [search, setSearch] = useState("");
   const [photo, setPhoto] = useState<{ url: string; label: string } | null>(null);
   const [now, setNow] = useState(Date.now());
-  const [mode, setMode] = useState<"receive" | "photos">("receive");
+  const [mode, setMode] = useState<"receive" | "photos" | "history">("receive");
   const [history, setHistory] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -190,7 +149,7 @@ export default function ReceptionView({ toast }: { toast: (m: string, t?: "ok" |
       {loadErr && <Note tone="err">Couldn't load samples: {loadErr}. Check that 03_sample_transport.sql has been run in Supabase.</Note>}
 
       <div role="tablist" aria-label="Samples view" className="inline-flex rounded-lg border overflow-hidden mb-4" style={{ borderColor: C.line }}>
-        {([["receive", "Receive samples"], ["photos", "Pickup photos"]] as const).map(([k, label]) => (
+        {([["receive", "Receive samples"], ["photos", "Pickup photos"], ["history", "History"]] as const).map(([k, label]) => (
           <button key={k} role="tab" aria-selected={mode === k} onClick={() => setMode(k)} className="px-4 py-2 text-sm cursor-pointer"
             style={{ background: mode === k ? C.ink : C.surface, color: mode === k ? C.surface : C.ink, fontWeight: mode === k ? 600 : 400 }}>
             {label}
@@ -199,6 +158,7 @@ export default function ReceptionView({ toast }: { toast: (m: string, t?: "ok" |
       </div>
 
       {mode === "photos" && <PhotoReview retentionDays={data?.settings.photoRetentionDays ?? 14} />}
+      {mode === "history" && <SampleHistoryView />}
       {mode === "receive" && <>
 
       {/* Scan box */}
