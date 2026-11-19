@@ -373,7 +373,7 @@ Open the Render address. Because nobody exists yet, the app shows **Create the f
 
 ### 5. Upgrading an existing installation
 
-1. Run any of `supabase/03_sample_transport.sql`, `04_fix_table_permissions.sql`, `05_report_delivery.sql`, `06_report_release.sql`, `07_wall_display.sql`, `08_courier_routes.sql` and `09_email_tracking.sql` not yet run, in that order, in the SQL Editor.
+1. Run any of `supabase/03_sample_transport.sql`, `04_fix_table_permissions.sql`, `05_report_delivery.sql`, `06_report_release.sql`, `07_wall_display.sql`, `08_courier_routes.sql`, `09_email_tracking.sql`, `10_load_routes.sql`, `11_email_audit.sql` and `12_sample_receipt_audit.sql` not yet run, in that order, in the SQL Editor.
 2. Redeploy the `manage-staff` Edge Function with the current `supabase/functions/manage-staff/index.ts` (it adds the Courier role and photo clean-up). Keep **Verify JWT** off.
 3. Push the updated code to GitHub so Render redeploys.
 
@@ -450,6 +450,7 @@ supabase/
   08_courier_routes.sql     Courier routes, route assignments, emergency collections
   09_email_tracking.sql     Email tracking: uploads, requisitions, worked / flagged / removed, undo
   11_email_audit.sql        Email tracking audit trail (admins only)
+  12_sample_receipt_audit.sql  Who received each sample (by name) + permanent receive/undo history
   10_load_routes.sql        Loads 11 courier routes, 98 route sites and 29 branches/depots (safe to re-run)
   functions/manage-staff/index.ts   Edge Function for staff accounts
   optional_add_staff_by_sql.sql     Manual alternative to the Staff tab
@@ -533,6 +534,7 @@ Department splits are worked out when the page loads, from the current dictionar
 | Courier gets *That site is not on a route assigned to you* | The site isn't on their routes. Add it to the route, or use **Emergency collection** if it's urgent. |
 | Courier sees nothing under *Ready for you to collect* | The sheet's location must match the destination chosen at release (pick it from the list). Reports for other places are under *Show … released for other places*. |
 | "Couldn't load samples" / "Couldn't load centres" | Run `supabase/03_sample_transport.sql`. |
+| Sample **History** says "History isn't set up yet", or receivers show as email names only | Run `supabase/12_sample_receipt_audit.sql`. |
 | Photos are not being deleted | Redeploy the current `manage-staff` function; use **Settings → Delete expired photos now** to test. |
 | A test is in the wrong department | Add or fix its keyword in **Settings → Department keywords** (or accept it from **Unrecognised test names**). |
 

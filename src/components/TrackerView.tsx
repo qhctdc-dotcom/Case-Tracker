@@ -322,7 +322,7 @@ function CaseDrawer({ c, siblings, now, onClose, onSelect }: {
                         try { const url = await api.samplePhotoUrl(s.photo_path!); if (w) w.location.href = url; } catch { w?.close(); }
                       }}>View pickup photo</button>
                     )}
-                    {s.received_at && <p className="text-ink-2">Received at pre-analytical <span className="num">{fmtIso(s.received_at)}</span>{transit !== null && ` after ${formatMinutes(transit)} in transit`}</p>}
+                    {s.received_at && <p className="text-ink-2">Received at pre-analytical <span className="num">{fmtIso(s.received_at)}</span>{api.receiverName(s) && <> by <span className="font-semibold text-ink">{api.receiverName(s)}</span></>}{transit !== null && ` after ${formatMinutes(transit)} in transit`}</p>}
                   </li>
                 );
               })}

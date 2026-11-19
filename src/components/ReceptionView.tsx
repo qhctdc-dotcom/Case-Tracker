@@ -22,6 +22,48 @@ function beep(kind: "ok" | "warn" | "err") {
   } catch { /* sound unavailable */ }
 }
 
+/** Permanent receipt history for one barcode (from sample_audit). */
+function SampleHistory({ barcode }: { barcode: string }) {
+  const [rows, setRows] = useState<api.SampleAuditRow[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    api.loadSampleHistory(barcode).then((r) => live && setRows(r)).catch((e) => live && setErr(e.message));
+    return () => { live = false; };
+  }, [barcode]);
+
+  if (err) return <Note tone="err">{err}</Note>;
+  if (!rows) return <p className="text-ink-3 text-sm">Loading…</p>;
+  if (!rows.length) return <p className="text-ink-3 text-sm">No history recorded for this barcode yet.</p>;
+
+  const colour = (a: string) => a.startsWith("Received") ? C.success : a.startsWith("Receipt undone") || a.startsWith("Removed") ? C.danger : C.accent;
+  const who = (r: api.SampleAuditRow) => r.actor_name || r.actor.split("@")[0];
+  const extra = (r: api.SampleAuditRow) => {
+    const d = r.details || {};
+    const bits: string[] = [];
+    if (d.centre) bits.push(`from ${d.centre}`);
+    if (r.action === "Received" && d.collected_by) bits.push(`collected by ${String(d.collected_by).split("@")[0]}`);
+    if (d.transit_minutes != null) bits.push(`${formatMinutes(Number(d.transit_minutes))} in transit`);
+    if (d.was_received_at) bits.push(`had been received by ${d.was_received_by_name || String(d.was_received_by || "").split("@")[0]} at ${fmtIso(d.was_received_at)}`);
+    if (d.backfilled) bits.push("recorded before history was switched on");
+    return bits.join(", ");
+  };
+
+  return (
+    <ol className="relative border-l-2 ml-2" style={{ borderColor: C.line }}>
+      {rows.map((r) => (
+        <li key={r.id} className="ml-4 pb-4 last:pb-0 relative">
+          <span className="absolute -left-[23px] top-1.5 w-3 h-3 rounded-full" style={{ background: colour(r.action) }} aria-hidden="true" />
+          <p className="text-sm"><Badge color={colour(r.action)}>{r.action}</Badge></p>
+          <p className="text-ink mt-1">by <span className="font-semibold">{who(r)}</span>{r.actor.includes("@") && <span className="text-ink-3 text-xs"> ({r.actor})</span>}</p>
+          <p className="num text-sm text-ink-2">{fmtIso(r.at)}</p>
+          {extra(r) && <p className="text-xs text-ink-3 mt-0.5">{extra(r)}</p>}
+        </li>
+      ))}
+    </ol>
+  );
+}
+
 export default function ReceptionView({ toast }: { toast: (m: string, t?: "ok" | "err") => void }) {
   const [data, setData] = useState<Awaited<ReturnType<typeof api.loadTransport>> | null>(null);
   const [loadErr, setLoadErr] = useState<string | null>(null);
@@ -34,6 +76,7 @@ export default function ReceptionView({ toast }: { toast: (m: string, t?: "ok" |
   const [photo, setPhoto] = useState<{ url: string; label: string } | null>(null);
   const [now, setNow] = useState(Date.now());
   const [mode, setMode] = useState<"receive" | "photos">("receive");
+  const [history, setHistory] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
@@ -81,8 +124,10 @@ export default function ReceptionView({ toast }: { toast: (m: string, t?: "ok" |
           detail: `From ${r.centre || "unknown centre"}${who ? `, collected by ${who}` : ""} at ${fmtTime(r.collected_at)}. In transit ${formatMinutes(r.transit_minutes || 0)}.` });
         if (sound) beep("ok");
       } else if (r.result === "already_received") {
+        const row = data?.samples.find((x) => x.id === r.sample_id);
+        const by = row ? api.receiverName(row) : api.receiverName({ received_by: r.received_by });
         setFeedback({ tone: "warn", title: `${r.barcode} was already received`,
-          detail: `Scanned in at ${fmtTime(r.received_at)} by ${(r.received_by || "").split("@")[0]}. Nothing changed.` });
+          detail: `Scanned in at ${fmtTime(r.received_at)} by ${by || "unknown"}. Nothing changed.` });
         if (sound) beep("warn");
       } else {
         setFeedback({ tone: "err", sampleId: r.sample_id, title: `${r.barcode} was not logged by a courier`,
@@ -100,7 +145,7 @@ export default function ReceptionView({ toast }: { toast: (m: string, t?: "ok" |
   }
 
   async function undo(id: number, label: string) {
-    if (!confirm(`Undo the receipt of ${label}? It will go back to "in transit" (or be removed if no courier logged it).`)) return;
+    if (!confirm(`Undo the receipt of ${label}? It will go back to "in transit" (or be removed if no courier logged it). The undo is kept in the sample's history.`)) return;
     try { await api.undoReceive(id); setFeedback(null); await load(); toast("Receipt undone."); }
     catch (e: any) { toast(e.message, "err"); }
   }
@@ -129,11 +174,11 @@ export default function ReceptionView({ toast }: { toast: (m: string, t?: "ok" |
 
   function exportCsv() {
     if (!view) return;
-    const rows = [["Barcode", "R#", "Centre", "Collected by", "Collected", "Received by", "Received", "Transit (min)", "Flag"].join(",")];
+    const rows = [["Barcode", "R#", "Centre", "Collected by", "Collected", "Received by", "Received by (email)", "Received", "Transit (min)", "Flag"].join(",")];
     [...view.inTransit, ...view.receivedToday].forEach((s) => {
       const tr = s.collected_at && s.received_at ? Math.round((+new Date(s.received_at) - +new Date(s.collected_at)) / 60000) : "";
       rows.push([s.barcode, s.r_number || "", csvCell(centreName(s.centre_id)), s.collected_by || "", fmtIso(s.collected_at),
-        s.received_by || "", fmtIso(s.received_at), tr, s.source === "reception" ? "Not logged by courier" : !s.received_at ? "In transit" : ""].join(","));
+        csvCell(s.received_at ? api.receiverName(s) : ""), s.received_by || "", fmtIso(s.received_at), tr, s.source === "reception" ? "Not logged by courier" : !s.received_at ? "In transit" : ""].join(","));
     });
     downloadFile(`sample_transport_${stamp()}.csv`, rows.join("\n"), "text/csv;charset=utf-8;");
   }
@@ -262,7 +307,9 @@ export default function ReceptionView({ toast }: { toast: (m: string, t?: "ok" |
                         </span>
                         <span className="text-right shrink-0">
                           {s.photo_path && !s.photo_deleted_at && <Button tone="quiet" className="px-0 py-0 text-xs mr-2" onClick={() => showPhoto(s)}>Photo</Button>}
+                          <Button tone="quiet" className="px-0 py-0 text-xs mr-2" onClick={() => setHistory(s.barcode)} aria-label={`History of ${s.barcode}`}>History</Button>
                           <span className="num text-sm text-ink">{fmtTime(s.received_at)}</span>
+                          <span className="block text-xs text-ink-2">by <span className="font-semibold">{api.receiverName(s) || "unknown"}</span></span>
                           {tr !== null && <span className="block text-xs text-ink-3">transit {formatMinutes(tr)}</span>}
                         </span>
                       </li>
@@ -279,6 +326,10 @@ export default function ReceptionView({ toast }: { toast: (m: string, t?: "ok" |
 
       <Modal open={!!photo} onClose={() => setPhoto(null)} wide title="Pickup photo">
         {photo && (<><img src={photo.url} alt={`Pickup photo for ${photo.label}`} className="w-full rounded-md" /><p className="text-sm text-ink-3 mt-2">{photo.label}</p></>)}
+      </Modal>
+
+      <Modal open={!!history} onClose={() => setHistory(null)} title={`History of ${history ?? ""}`}>
+        {history && <SampleHistory barcode={history} />}
       </Modal>
     </div>
   );

@@ -174,7 +174,7 @@ function PhotoViewer({ photo, centre, index, total, onClose, onPrev, onNext }: {
                 {s.r_number && s.r_number !== s.barcode && <span className="block text-xs text-ink-3">R# {s.r_number}</span>}
               </span>
               {s.received_at
-                ? <Badge color={C.success} title={`Received ${fmtIso(s.received_at)}`}>Received {fmtTime(s.received_at)}</Badge>
+                ? <Badge color={C.success} title={`Received ${fmtIso(s.received_at)}${api.receiverName(s) ? ` by ${api.receiverName(s)}` : ""}`}>Received {fmtTime(s.received_at)}</Badge>
                 : <Badge color={C.warning}>In transit</Badge>}
             </li>
           ))}
