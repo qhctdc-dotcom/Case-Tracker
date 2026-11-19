@@ -532,3 +532,52 @@ export async function loadEmailAudit(fromIso: string, toIso: string) {
   }
   return out;
 }
+
+/* ---------- analytics (admin) ---------- */
+export interface AnalyticsData {
+  samples: SampleRow[]; runs: CourierRun[]; centres: Centre[]; audit: SampleAuditRow[]; auditMissing: boolean;
+  releases: ReportRelease[]; deliveries: ReportDelivery[]; sheets: DeliverySheet[];
+  names: Record<string, string>; transitAlertMinutes: number; truncated: boolean;
+}
+const MAX_ROWS = 30000;
+async function pages<T>(build: (from: number, to: number) => PromiseLike<{ data: any; error: { message: string } | null }>, what: string) {
+  const out: T[] = [];
+  for (let from = 0; from < MAX_ROWS; from += 1000) {
+    const data = await call(build(from, from + 999), what) as T[];
+    out.push(...data);
+    if (data.length < 1000) return { rows: out, truncated: false };
+  }
+  return { rows: out, truncated: true };
+}
+/** Everything collected, received, released or delivered between `fromIso` and `toIso`. */
+export async function loadAnalytics(fromIso: string, toIso: string): Promise<AnalyticsData> {
+  const inRange = (col: string) => `and(${col}.gte.${fromIso},${col}.lt.${toIso})`;
+  const runsSince = new Date(new Date(fromIso).getTime() - 2 * 86400e3).toISOString();
+  const [samples, runs, centres, settings, rel, del] = await Promise.all([
+    pages<SampleRow>((a, b) => client().from("samples").select(sampleCols()).or(`${inRange("collected_at")},${inRange("received_at")}`).order("id").range(a, b), "Samples")
+      .catch(async (e) => { if (!/received_by_name/.test(e.message)) throw e; hasReceiverName = false;
+        return pages<SampleRow>((a, b) => client().from("samples").select(sampleCols()).or(`${inRange("collected_at")},${inRange("received_at")}`).order("id").range(a, b), "Samples"); }),
+    pages<CourierRun>((a, b) => client().from("courier_runs").select("*").gte("started_at", runsSince).lt("started_at", toIso).order("id").range(a, b), "Runs"),
+    loadCentres(),
+    loadTransportSettings(),
+    pages<ReportRelease>((a, b) => client().from("report_releases").select("*").gte("released_at", fromIso).lt("released_at", toIso).order("id").range(a, b), "Released reports"),
+    pages<ReportDelivery>((a, b) => client().from("report_deliveries").select("id,sheet_id,r_number,client_name,picked_up_at,status,receiver_name,recorded_at,reason")
+      .gte("picked_up_at", fromIso).lt("picked_up_at", toIso).order("id").range(a, b), "Deliveries"),
+  ]);
+  let audit: SampleAuditRow[] = [], auditMissing = false;
+  try {
+    const r = await pages<SampleAuditRow>((a, b) => client().from("sample_audit").select("*").gte("at", fromIso).lt("at", toIso).order("id").range(a, b), "History");
+    audit = r.rows;
+  } catch { auditMissing = true; }
+  const sheetIds = [...new Set(del.rows.map((d) => d.sheet_id))];
+  const sheets: DeliverySheet[] = [];
+  for (const part of chunks(sheetIds, 150)) sheets.push(...await call(client().from("delivery_sheets").select("id,courier_email,courier_name,location,department,started_at,closed_at,reviewed_by,reviewed_at").in("id", part), "Sheets") as DeliverySheet[]);
+  const names: Record<string, string> = {};
+  try {
+    const staff = await call(client().from("staff").select("email,display_name"), "Staff") as { email: string; display_name: string | null }[];
+    staff.forEach((s) => { if (s.display_name) names[s.email] = s.display_name; });
+  } catch { /* names fall back to the email */ }
+  audit.forEach((r) => { if (r.actor_name && !names[r.actor]) names[r.actor] = r.actor_name; });
+  return { samples: samples.rows, runs: runs.rows, centres, audit, auditMissing, releases: rel.rows, deliveries: del.rows, sheets, names,
+    transitAlertMinutes: settings.transitAlertMinutes, truncated: samples.truncated || rel.truncated || del.truncated };
+}

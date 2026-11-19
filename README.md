@@ -99,6 +99,36 @@ The strip under the header shows the last paste and who made it. **Undo that pas
 
 Use **Print** (prints on white paper regardless of theme) or **Export CSV**.
 
+### Analytics (admins only)
+
+The **Analytics** tab brings together everything the app records. Choose a period (today, yesterday, the last 7, 30 or 90 days, or this month) and, if you want, a single centre or depot. Every figure and chart below then covers that selection.
+
+- **Sample transport:**
+  - samples collected per day, by centre and by courier
+  - collections and emergency collections
+  - average transit time, overall and by centre
+  - tubes over the transit alert time, and tubes still in transit
+  - the busiest collection hours
+- **Reception and staff:**
+  - samples received per day and by staff member
+  - receipts not logged by a courier
+  - receipts undone
+  - the busiest reception hours
+- **Test turnaround (TAT):**
+  - cases, on time, delayed, delay rate and average delay, using the same grace times as the Delay report
+  - delay rate by department
+  - the tests delayed most often
+  - cases overdue right now
+  - TAT comes from the tracker, so it is not split by centre.
+- **Report delivery:**
+  - reports released, picked up, delivered and not delivered
+  - average time from receipt to release, and from pick-up to delivery
+  - delivery outcomes (D, ND, CU, C)
+  - deliveries per day, by destination and by courier
+  - the reasons reports weren't delivered
+
+Hover over or tab to any bar to see its exact figure. **Show table** switches any chart to a table, and **Export all (CSV)** downloads every figure and table at once.
+
 ### Display settings
 
 Click **Display** (top right):
@@ -346,6 +376,7 @@ More frequent pastes mean fewer *Unclear* cases and tighter delay ranges. The re
 | Release reports for delivery; release returned reports again or withdraw them | | ✓ | ✓ |
 | Fill in report delivery sheets (pick-up, receiver signature, status) | ✓ | | |
 | View, review and print delivery sheets (GHA-POSTF001) | | ✓ | ✓ |
+| Analytics across transport, reception, TAT and delivery | | | ✓ |
 
 Wall display accounts see only the read-only incoming-samples screen. Couriers see only the collection screen and only their own collections; they cannot see the tracker, reports or other couriers' work. Every user can change their own password from the menu under their name. Deactivating someone blocks their sign-in immediately; their past work stays in the records.
 
@@ -447,6 +478,8 @@ src/
     DeliveryCourier.tsx     Courier screen for delivering reports
     DeliveriesView.tsx      Lab view of delivery sheets: review, print, export
     DueBackView.tsx         Received R#s not yet released, grouped by the centre they came from
+    AnalyticsView.tsx       Admin analytics: transport, reception, TAT and delivery
+    charts.tsx              Small chart components used by Analytics
     ReleaseView.tsx         Post-analytical release of reports, waiting and returned lists
     WallDisplay.tsx         TV screen: incoming samples by centre, live
     EmailTrackingView.tsx   Email tracking: upload, review, to work, flagged, worked, uploads
