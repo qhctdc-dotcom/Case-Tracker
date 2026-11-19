@@ -275,8 +275,12 @@ export async function samplePhotoUrl(path: string): Promise<string> {
   return data.signedUrl;
 }
 
+// Each subscriber needs its own channel: Supabase returns the existing channel for a
+// name already in use, and adding listeners to it after subscribe() throws, which
+// blanked the page when Receive samples and History were both listening.
+let transportSubs = 0;
 export function subscribeTransport(onChange: () => void) {
-  const ch = client().channel("transport-live")
+  const ch = client().channel(`transport-live-${++transportSubs}`)
     .on("postgres_changes", { event: "*", schema: "public", table: "samples" }, onChange)
     .on("postgres_changes", { event: "*", schema: "public", table: "courier_runs" }, onChange)
     .subscribe();
