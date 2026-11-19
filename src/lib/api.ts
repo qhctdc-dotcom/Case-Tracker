@@ -393,11 +393,77 @@ export const loadWaitingReleases = () =>
 export const releaseReports = (codes: string[], destination: string) =>
   call(client().rpc("release_reports", { p_codes: codes, p_destination: destination }), "Releasing") as Promise<ReleaseResult[]>;
 export const cancelRelease = (id: number, note: string) => call(client().rpc("cancel_release", { p_id: id, p_note: note }), "Withdrawing");
+let releaseSubs = 0;
 export function subscribeReleases(onChange: () => void) {
-  const ch = client().channel("releases-live")
+  const ch = client().channel(`releases-live-${++releaseSubs}`)
     .on("postgres_changes", { event: "*", schema: "public", table: "report_releases" }, onChange).subscribe();
   return () => { client().removeChannel(ch); };
 }
+/* ---------- reports due back to the centre the samples came from ---------- */
+export interface DueBackItem {
+  r_number: string; centre_id: number | null; barcodes: string[]; received_at: string; collected_at: string | null;
+  client_name: string | null; known_to_tracker: boolean; pending_tests: number; total_tests: number; withdrawn: boolean;
+}
+const chunks = <T,>(a: T[], n: number) => Array.from({ length: Math.ceil(a.length / n) }, (_, i) => a.slice(i * n, i * n + n));
+async function pagedIn<T>(table: string, cols: string, rs: string[], what: string): Promise<T[]> {
+  const out: T[] = [];
+  for (const part of chunks(rs, 150)) {
+    for (let from = 0; ; from += 1000) {
+      const data = await call(client().from(table).select(cols).in("r_number", part).order("id").range(from, from + 999), what) as T[];
+      out.push(...data);
+      if (data.length < 1000) break;
+    }
+  }
+  return out;
+}
+/**
+ * R#s received in the lab since local midnight `days - 1` days ago whose report hasn't been sent back yet.
+ * A report counts as sent once it is released, with a courier, delivered, returned, or closed after a return.
+ * A release withdrawn before pick-up puts it back on this list.
+ */
+export async function loadDueBack(days = 7): Promise<DueBackItem[]> {
+  const since = new Date(); since.setHours(0, 0, 0, 0); since.setDate(since.getDate() - (days - 1));
+  type S = { id: number; r_number: string; barcode: string; centre_id: number | null; received_at: string; collected_at: string | null };
+  const samples: S[] = [];
+  for (let from = 0; from < 20000; from += 1000) {
+    const data = await call(client().from("samples").select("id,r_number,barcode,centre_id,received_at,collected_at")
+      .gte("received_at", since.toISOString()).not("r_number", "is", null).order("id").range(from, from + 999), "Samples") as S[];
+    samples.push(...data);
+    if (data.length < 1000) break;
+  }
+  const byR = new Map<string, DueBackItem>();
+  for (const s of samples) {
+    const it = byR.get(s.r_number);
+    if (!it) {
+      byR.set(s.r_number, { r_number: s.r_number, centre_id: s.centre_id, barcodes: [s.barcode], received_at: s.received_at, collected_at: s.collected_at,
+        client_name: null, known_to_tracker: false, pending_tests: 0, total_tests: 0, withdrawn: false });
+    } else {
+      if (!it.barcodes.includes(s.barcode)) it.barcodes.push(s.barcode);
+      if (it.centre_id == null) it.centre_id = s.centre_id;
+      if (s.received_at > it.received_at) it.received_at = s.received_at;
+    }
+  }
+  const rs = [...byR.keys()];
+  if (!rs.length) return [];
+  const [rels, reqs, tests] = await Promise.all([
+    pagedIn<{ r_number: string; status: ReleaseStatus; delivery_id: number | null }>("report_releases", "id,r_number,status,delivery_id", rs, "Released reports"),
+    (async () => {
+      const out: { r_number: string; client_raw: string }[] = [];
+      for (const part of chunks(rs, 150)) out.push(...await call(client().from("requisitions").select("r_number,client_raw").in("r_number", part), "Requisitions") as any[]);
+      return out;
+    })(),
+    pagedIn<{ r_number: string; status: string }>("requisition_tests", "id,r_number,status", rs, "Tests"),
+  ]);
+  for (const rel of rels) {
+    const it = byR.get(rel.r_number); if (!it) continue;
+    if (rel.status === "cancelled" && rel.delivery_id == null) it.withdrawn = true;
+    else byR.delete(rel.r_number);
+  }
+  for (const q of reqs) { const it = byR.get(q.r_number); if (it) { it.known_to_tracker = true; it.client_name = q.client_raw || null; } }
+  for (const t of tests) { const it = byR.get(t.r_number); if (it) { it.total_tests++; if (t.status === "Pending") it.pending_tests++; } }
+  return [...byR.values()];
+}
+
 export const releasesForRequisition = (r: string) =>
   call(client().from("report_releases").select("*").eq("r_number", r).order("id"), "Released reports") as Promise<ReportRelease[]>;
 

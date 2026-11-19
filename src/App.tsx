@@ -41,6 +41,16 @@ export default function App() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [display, setDisplay] = useDisplay();
   const [courierMode, setCourierMode] = useState<"collect" | "deliver">("collect");
+  // Couriers: how many reports the lab has released and are waiting to be collected
+  const [readyCount, setReadyCount] = useState(0);
+  useEffect(() => {
+    if (phase !== "app" || me?.role !== "courier") return;
+    const load = () => api.loadWaitingReleases().then((w) => setReadyCount(w.length)).catch(() => { /* badge only */ });
+    load();
+    let t: number | undefined;
+    const unsub = api.subscribeReleases(() => { clearTimeout(t); t = window.setTimeout(load, 800); });
+    return () => { unsub(); clearTimeout(t); };
+  }, [phase, me?.role]);
 
   const toast = useCallback((text: string, tone: "ok" | "err" = "ok") => {
     const id = Date.now() + Math.random();
@@ -175,7 +185,7 @@ export default function App() {
               <button key={k} role="tab" aria-selected={courierMode === k} onClick={() => setCourierMode(k)}
                 className="py-2.5 text-base cursor-pointer"
                 style={{ background: courierMode === k ? C.ink : C.surface, color: courierMode === k ? C.surface : C.ink, fontWeight: courierMode === k ? 600 : 400 }}>
-                {label}
+                {label}{k === "deliver" && readyCount > 0 && <span className="ml-2 inline-flex items-center justify-center min-w-6 h-6 px-1.5 rounded-full text-sm font-semibold" style={{ background: C.success, color: "#fff" }} aria-label={`${readyCount} ready`}>{readyCount}</span>}
               </button>
             ))}
           </div>

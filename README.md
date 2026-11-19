@@ -195,11 +195,24 @@ Create courier accounts in **Staff** with the role **Courier**.
 
 The paper *Proof of delivery of clients' medical reports* form (GHA-POSTF001) is filled in on the courier's phone and printed from the app in the same layout.
 
+### Step 0: reports due back to centres
+
+Sample tracking doesn't stop at reception. **Deliveries → 1. Due back to centres** lists every R# that a courier brought in and pre-analytical received. They are **grouped by the centre or depot each R# was collected from**. An R# stays on the list until its report is released for delivery.
+
+- Each R# shows the client, the number of tubes, when it was received, and its test status from the tracker:
+  - **Tests complete: ready to release**
+  - **n of m tests outstanding**
+  - **Not in tracker**
+- **Release** sends one report to its own centre. **Release n ready** on a centre releases all of that centre's finished reports at once. If a report still has tests outstanding, the app asks before releasing it.
+- Once released, the R# moves to **Delivery sheets → Ready for courier pick-up**, and couriers see it on their phones as ready to collect. If the release is withdrawn before pick-up, the R# comes back to this list.
+- You can filter by period, centre or status, find an R# or barcode, and **Export (CSV)**.
+- Samples scanned in without a courier record are listed under *Centre not recorded*. Release those from **Release reports** and choose the destination there.
+
 ### Step 1: post-analytical releases the reports
 
 Reports can only leave the lab once post-analytical has released them.
 
-1. Go to **Deliveries → 1. Release reports**.
+1. Go to **Deliveries → 2. Release reports**.
 2. Choose the **destination** (a centre, or *Other…*). It is remembered on that computer.
 3. Scan each finished report with the handheld scanner (or type the R# and press Enter). Each scan shows a result:
    - **Released**, with the client name. Ready for the courier.
@@ -210,7 +223,7 @@ Reports can only leave the lab once post-analytical has released them.
 
 ### Step 2: the courier picks up and delivers (on a phone)
 
-1. Sign in and tap **Deliver reports** at the top.
+1. Sign in and tap **Deliver reports** at the top. A green number on the tab shows how many reports the lab has released. **Results ready for collection** lists them by centre, with the sites on your routes first. It updates by itself as post-analytical releases reports. Tap a centre to fill in the delivery location, or tap **See R#s** to list its reports.
 2. Enter the **delivery location** and **department**, **sign** in the box (courier signature) and tap **Start delivery sheet**. This is the pick-up.
 3. **Ready for you to collect** lists the reports released for that location. Tick the ones in hand and tap **Pick up**, or scan them (photo) or type the R#. A report that hasn't been released is refused (*hand it back*); one released for a different place is accepted with a note. The client name comes from the release; if it's missing, tap **Add client name**.
 4. At the client, tap **Record delivery** on the report and choose:
@@ -221,7 +234,9 @@ Reports can only leave the lab once post-analytical has released them.
 
 A report can only be out for delivery on one sheet at a time. **Remove** takes off a report added by mistake (before its outcome is recorded) and puts it back on the released list. Reports marked ND, CU or C go back to post-analytical's **Returned** list.
 
-### Step 3: post-analytical reviews the sheets (Deliveries → 2. Delivery sheets)
+### Step 3: post-analytical reviews the sheets (Deliveries → 3. Delivery sheets)
+
+- **Ready for courier pick-up** at the top lists released reports by destination, with how long they have been waiting. When a courier picks a report up, it moves onto that courier's delivery sheet below.
 
 - Counts of reports out for delivery, delivered and not delivered today, and sheets awaiting review.
 - Each sheet shows its reports, statuses, receivers and signatures. Filter by status or search by R#, client, receiver or courier.
@@ -431,6 +446,7 @@ src/
     PhotoReview.tsx         Pickup photo gallery and viewer
     DeliveryCourier.tsx     Courier screen for delivering reports
     DeliveriesView.tsx      Lab view of delivery sheets: review, print, export
+    DueBackView.tsx         Received R#s not yet released, grouped by the centre they came from
     ReleaseView.tsx         Post-analytical release of reports, waiting and returned lists
     WallDisplay.tsx         TV screen: incoming samples by centre, live
     EmailTrackingView.tsx   Email tracking: upload, review, to work, flagged, worked, uploads
