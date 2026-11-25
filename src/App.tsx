@@ -9,6 +9,7 @@ import SettingsView from "./components/SettingsView";
 import StaffView from "./components/StaffView";
 import CourierView from "./components/CourierView";
 import ReceptionView from "./components/ReceptionView";
+import AnalyticsView from "./components/AnalyticsView";
 import DeliveriesView from "./components/DeliveriesView";
 import DeliveryCourier from "./components/DeliveryCourier";
 import WallDisplay from "./components/WallDisplay";
@@ -17,7 +18,7 @@ import { Button, C, Logo } from "./components/ui";
 import DisplayMenu from "./components/DisplayMenu";
 import { useDisplay } from "./lib/display";
 
-type Tab = "tracker" | "samples" | "deliveries" | "emails" | "report" | "settings" | "staff";
+type Tab = "tracker" | "samples" | "deliveries" | "emails" | "report" | "analytics" | "settings" | "staff";
 type Phase = "boot" | "auth" | "app";
 
 function LiveClock() {
@@ -41,6 +42,16 @@ export default function App() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [display, setDisplay] = useDisplay();
   const [courierMode, setCourierMode] = useState<"collect" | "deliver">("collect");
+  // Couriers: how many reports the lab has released and are waiting to be collected
+  const [readyCount, setReadyCount] = useState(0);
+  useEffect(() => {
+    if (phase !== "app" || me?.role !== "courier") return;
+    const load = () => api.loadWaitingReleases().then((w) => setReadyCount(w.length)).catch(() => { /* badge only */ });
+    load();
+    let t: number | undefined;
+    const unsub = api.subscribeReleases(() => { clearTimeout(t); t = window.setTimeout(load, 800); });
+    return () => { unsub(); clearTimeout(t); };
+  }, [phase, me?.role]);
 
   const toast = useCallback((text: string, tone: "ok" | "err" = "ok") => {
     const id = Date.now() + Math.random();
@@ -175,7 +186,7 @@ export default function App() {
               <button key={k} role="tab" aria-selected={courierMode === k} onClick={() => setCourierMode(k)}
                 className="py-2.5 text-base cursor-pointer"
                 style={{ background: courierMode === k ? C.ink : C.surface, color: courierMode === k ? C.surface : C.ink, fontWeight: courierMode === k ? 600 : 400 }}>
-                {label}
+                {label}{k === "deliver" && readyCount > 0 && <span className="ml-2 inline-flex items-center justify-center min-w-6 h-6 px-1.5 rounded-full text-sm font-semibold" style={{ background: C.success, color: "#fff" }} aria-label={`${readyCount} ready`}>{readyCount}</span>}
               </button>
             ))}
           </div>
@@ -198,7 +209,7 @@ export default function App() {
   const isAdmin = me.role === "admin";
   const lastPaste = snap.pastes[0] || null;
   const initials = (me.display_name || me.email).split(/[\s@.]+/).filter(Boolean).slice(0, 2).map((w) => w[0]!.toUpperCase()).join("");
-  const tabs: [Tab, string][] = [["tracker", "Tracker"], ["samples", "Samples"], ["deliveries", "Deliveries"], ["emails", "Emails"], ["report", "Delay report"], ["settings", "Settings"], ...(isAdmin ? [["staff", "Staff"] as [Tab, string]] : [])];
+  const tabs: [Tab, string][] = [["tracker", "Tracker"], ["samples", "Samples"], ["deliveries", "Deliveries"], ["emails", "Emails"], ["report", "Delay report"], ...(isAdmin ? [["analytics", "Analytics"] as [Tab, string]] : []), ["settings", "Settings"], ...(isAdmin ? [["staff", "Staff"] as [Tab, string]] : [])];
 
   return (
     <div className="min-h-screen bg-canvas">
@@ -262,6 +273,7 @@ export default function App() {
         {tab === "emails" && <EmailTrackingView toast={toast} isAdmin={isAdmin} />}
         {tab === "report" && <ReportView slices={slices} pasteTimes={snap.pastes.map((p) => p.at)} dicts={dicts} settings={snap.settings} onError={(m) => toast(m, "err")} />}
         {tab === "settings" && <SettingsView snap={snap} dicts={dicts} slices={slices} isAdmin={isAdmin} refresh={refresh} toast={toast} />}
+        {tab === "analytics" && isAdmin && <AnalyticsView slices={slices} pasteTimes={snap.pastes.map((p) => p.at)} dicts={dicts} settings={snap.settings} />}
         {tab === "staff" && isAdmin && <StaffView me={me} />}
       </main>
 

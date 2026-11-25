@@ -159,15 +159,60 @@ export interface CourierRun { id: number; courier_email: string; centre_id: numb
 export interface SampleRow {
   id: number; barcode: string; barcode_raw: string | null; r_number: string | null; run_id: number | null; centre_id: number | null;
   collected_by: string | null; collected_at: string | null; photo_path: string | null; photo_deleted_at: string | null;
-  received_by: string | null; received_at: string | null; source: "courier" | "reception";
+  received_by: string | null; received_by_name?: string | null; received_at: string | null; source: "courier" | "reception";
 }
+/** Who received a sample: their name at the time of the scan, else the start of their email. */
+export const receiverName = (s: { received_by?: string | null; received_by_name?: string | null }) =>
+  s.received_by_name || (s.received_by || "").split("@")[0] || "";
 export interface TransportSettings { photoRetentionDays: number; transitAlertMinutes: number }
 export interface ReceiveResult {
   result: "received" | "already_received" | "not_logged_by_courier";
   sample_id: number; barcode: string; r_number: string | null; centre?: string | null; collected_by?: string | null;
   collected_at?: string | null; received_at: string; received_by?: string; transit_minutes?: number;
 }
-const SAMPLE_COLS = "id,barcode,barcode_raw,r_number,run_id,centre_id,collected_by,collected_at,photo_path,photo_deleted_at,received_by,received_at,source";
+const SAMPLE_COLS_BASE = "id,barcode,barcode_raw,r_number,run_id,centre_id,collected_by,collected_at,photo_path,photo_deleted_at,received_by,received_at,source";
+// received_by_name comes from 12_sample_receipt_audit.sql. Until that has been run,
+// read without it so the Samples screen keeps working.
+let hasReceiverName = true;
+const sampleCols = () => hasReceiverName ? `${SAMPLE_COLS_BASE},received_by_name` : SAMPLE_COLS_BASE;
+async function readSamples(build: (cols: string) => PromiseLike<{ data: any; error: { message: string } | null }>, what: string): Promise<SampleRow[]> {
+  try { return await call(build(sampleCols()), what); }
+  catch (e: any) {
+    if (!hasReceiverName || !/received_by_name/.test(e.message)) throw e;
+    hasReceiverName = false;
+    return await call(build(sampleCols()), what);
+  }
+}
+
+export interface SampleAuditRow {
+  id: number; at: string; actor: string; actor_name: string | null; action: string;
+  sample_id: number | null; barcode: string; r_number: string | null; details: Record<string, any> | null;
+}
+const auditError = (error: { message: string; code?: string }) => new Error(/sample_audit/.test(error.message) || error.code === "42P01"
+  ? "History isn't set up yet: run supabase/12_sample_receipt_audit.sql in Supabase"
+  : `Loading history: ${error.message}`);
+
+/** Permanent receipt history for one barcode, oldest first. */
+export async function loadSampleHistory(barcode: string): Promise<SampleAuditRow[]> {
+  const { data, error } = await client().from("sample_audit").select("*").eq("barcode", barcode).order("at").order("id").limit(500);
+  if (error) throw auditError(error);
+  return data as SampleAuditRow[];
+}
+
+/** All receipt history events since local midnight `days - 1` days ago, newest first (at most 10 000). */
+export async function loadSampleAudit(days: number): Promise<{ rows: SampleAuditRow[]; truncated: boolean }> {
+  const since = new Date(); since.setHours(0, 0, 0, 0); since.setDate(since.getDate() - (days - 1));
+  const rows: SampleAuditRow[] = [];
+  const size = 1000, max = 10000;
+  for (let from = 0; from < max; from += size) {
+    const { data, error } = await client().from("sample_audit").select("*").gte("at", since.toISOString())
+      .order("at", { ascending: false }).order("id", { ascending: false }).range(from, from + size - 1);
+    if (error) throw auditError(error);
+    rows.push(...(data as SampleAuditRow[]));
+    if (!data || data.length < size) return { rows, truncated: false };
+  }
+  return { rows, truncated: true };
+}
 
 export const loadCentres = () =>
   call(client().from("centres").select("id,name,active").order("name"), "Centres") as Promise<Centre[]>;
@@ -181,7 +226,7 @@ export async function loadTransportSettings(): Promise<TransportSettings> {
 export async function loadTransport(hours = 36) {
   const since = new Date(Date.now() - hours * 3600e3).toISOString();
   const [samples, runs, centres, settings] = await Promise.all([
-    call(client().from("samples").select(SAMPLE_COLS)
+    readSamples((cols) => client().from("samples").select(cols)
       .or(`received_at.is.null,collected_at.gte.${since},received_at.gte.${since}`).order("id", { ascending: false }).limit(3000), "Samples"),
     call(client().from("courier_runs").select("*").or(`handed_over_at.is.null,started_at.gte.${since}`).order("id", { ascending: false }).limit(500), "Runs"),
     loadCentres(),
@@ -191,13 +236,13 @@ export async function loadTransport(hours = 36) {
 }
 
 export const samplesForRequisition = (r: string) =>
-  call(client().from("samples").select(SAMPLE_COLS).eq("r_number", r).order("id"), "Samples") as Promise<SampleRow[]>;
+  readSamples((cols) => client().from("samples").select(cols).eq("r_number", r).order("id"), "Samples");
 
 export async function myOpenRun(email: string) {
   const runs = await call(client().from("courier_runs").select("*").eq("courier_email", email).order("id", { ascending: false }).limit(15), "Runs") as CourierRun[];
   const ids = runs.map((r) => r.id);
   const samples = ids.length
-    ? await call(client().from("samples").select(SAMPLE_COLS).in("run_id", ids).order("id", { ascending: false }), "Samples") as SampleRow[]
+    ? await readSamples((cols) => client().from("samples").select(cols).in("run_id", ids).order("id", { ascending: false }), "Samples")
     : [];
   return { runs, samples };
 }
@@ -230,8 +275,12 @@ export async function samplePhotoUrl(path: string): Promise<string> {
   return data.signedUrl;
 }
 
+// Each subscriber needs its own channel: Supabase returns the existing channel for a
+// name already in use, and adding listeners to it after subscribe() throws, which
+// blanked the page when Receive samples and History were both listening.
+let transportSubs = 0;
 export function subscribeTransport(onChange: () => void) {
-  const ch = client().channel("transport-live")
+  const ch = client().channel(`transport-live-${++transportSubs}`)
     .on("postgres_changes", { event: "*", schema: "public", table: "samples" }, onChange)
     .on("postgres_changes", { event: "*", schema: "public", table: "courier_runs" }, onChange)
     .subscribe();
@@ -299,8 +348,8 @@ export interface PickupPhoto { path: string; url: string | null; takenAt: string
 export async function loadPickupPhotos(days: number) {
   const since = new Date(Date.now() - days * 86400e3).toISOString();
   const [samples, runs, centres] = await Promise.all([
-    call(client().from("samples").select(SAMPLE_COLS).not("photo_path", "is", null).is("photo_deleted_at", null)
-      .gte("collected_at", since).order("collected_at", { ascending: false }).limit(3000), "Photos") as Promise<SampleRow[]>,
+    readSamples((cols) => client().from("samples").select(cols).not("photo_path", "is", null).is("photo_deleted_at", null)
+      .gte("collected_at", since).order("collected_at", { ascending: false }).limit(3000), "Photos"),
     call(client().from("courier_runs").select("*").gte("started_at", new Date(Date.now() - (days + 1) * 86400e3).toISOString()).order("id", { ascending: false }).limit(1000), "Runs") as Promise<CourierRun[]>,
     loadCentres(),
   ]);
@@ -344,11 +393,77 @@ export const loadWaitingReleases = () =>
 export const releaseReports = (codes: string[], destination: string) =>
   call(client().rpc("release_reports", { p_codes: codes, p_destination: destination }), "Releasing") as Promise<ReleaseResult[]>;
 export const cancelRelease = (id: number, note: string) => call(client().rpc("cancel_release", { p_id: id, p_note: note }), "Withdrawing");
+let releaseSubs = 0;
 export function subscribeReleases(onChange: () => void) {
-  const ch = client().channel("releases-live")
+  const ch = client().channel(`releases-live-${++releaseSubs}`)
     .on("postgres_changes", { event: "*", schema: "public", table: "report_releases" }, onChange).subscribe();
   return () => { client().removeChannel(ch); };
 }
+/* ---------- reports due back to the centre the samples came from ---------- */
+export interface DueBackItem {
+  r_number: string; centre_id: number | null; barcodes: string[]; received_at: string; collected_at: string | null;
+  client_name: string | null; known_to_tracker: boolean; pending_tests: number; total_tests: number; withdrawn: boolean;
+}
+const chunks = <T,>(a: T[], n: number) => Array.from({ length: Math.ceil(a.length / n) }, (_, i) => a.slice(i * n, i * n + n));
+async function pagedIn<T>(table: string, cols: string, rs: string[], what: string): Promise<T[]> {
+  const out: T[] = [];
+  for (const part of chunks(rs, 150)) {
+    for (let from = 0; ; from += 1000) {
+      const data = await call(client().from(table).select(cols).in("r_number", part).order("id").range(from, from + 999), what) as T[];
+      out.push(...data);
+      if (data.length < 1000) break;
+    }
+  }
+  return out;
+}
+/**
+ * R#s received in the lab since local midnight `days - 1` days ago whose report hasn't been sent back yet.
+ * A report counts as sent once it is released, with a courier, delivered, returned, or closed after a return.
+ * A release withdrawn before pick-up puts it back on this list.
+ */
+export async function loadDueBack(days = 7): Promise<DueBackItem[]> {
+  const since = new Date(); since.setHours(0, 0, 0, 0); since.setDate(since.getDate() - (days - 1));
+  type S = { id: number; r_number: string; barcode: string; centre_id: number | null; received_at: string; collected_at: string | null };
+  const samples: S[] = [];
+  for (let from = 0; from < 20000; from += 1000) {
+    const data = await call(client().from("samples").select("id,r_number,barcode,centre_id,received_at,collected_at")
+      .gte("received_at", since.toISOString()).not("r_number", "is", null).order("id").range(from, from + 999), "Samples") as S[];
+    samples.push(...data);
+    if (data.length < 1000) break;
+  }
+  const byR = new Map<string, DueBackItem>();
+  for (const s of samples) {
+    const it = byR.get(s.r_number);
+    if (!it) {
+      byR.set(s.r_number, { r_number: s.r_number, centre_id: s.centre_id, barcodes: [s.barcode], received_at: s.received_at, collected_at: s.collected_at,
+        client_name: null, known_to_tracker: false, pending_tests: 0, total_tests: 0, withdrawn: false });
+    } else {
+      if (!it.barcodes.includes(s.barcode)) it.barcodes.push(s.barcode);
+      if (it.centre_id == null) it.centre_id = s.centre_id;
+      if (s.received_at > it.received_at) it.received_at = s.received_at;
+    }
+  }
+  const rs = [...byR.keys()];
+  if (!rs.length) return [];
+  const [rels, reqs, tests] = await Promise.all([
+    pagedIn<{ r_number: string; status: ReleaseStatus; delivery_id: number | null }>("report_releases", "id,r_number,status,delivery_id", rs, "Released reports"),
+    (async () => {
+      const out: { r_number: string; client_raw: string }[] = [];
+      for (const part of chunks(rs, 150)) out.push(...await call(client().from("requisitions").select("r_number,client_raw").in("r_number", part), "Requisitions") as any[]);
+      return out;
+    })(),
+    pagedIn<{ r_number: string; status: string }>("requisition_tests", "id,r_number,status", rs, "Tests"),
+  ]);
+  for (const rel of rels) {
+    const it = byR.get(rel.r_number); if (!it) continue;
+    if (rel.status === "cancelled" && rel.delivery_id == null) it.withdrawn = true;
+    else byR.delete(rel.r_number);
+  }
+  for (const q of reqs) { const it = byR.get(q.r_number); if (it) { it.known_to_tracker = true; it.client_name = q.client_raw || null; } }
+  for (const t of tests) { const it = byR.get(t.r_number); if (it) { it.total_tests++; if (t.status === "Pending") it.pending_tests++; } }
+  return [...byR.values()];
+}
+
 export const releasesForRequisition = (r: string) =>
   call(client().from("report_releases").select("*").eq("r_number", r).order("id"), "Released reports") as Promise<ReportRelease[]>;
 
@@ -416,4 +531,53 @@ export async function loadEmailAudit(fromIso: string, toIso: string) {
     if (page.length < 1000 || out.length >= 20000) break;
   }
   return out;
+}
+
+/* ---------- analytics (admin) ---------- */
+export interface AnalyticsData {
+  samples: SampleRow[]; runs: CourierRun[]; centres: Centre[]; audit: SampleAuditRow[]; auditMissing: boolean;
+  releases: ReportRelease[]; deliveries: ReportDelivery[]; sheets: DeliverySheet[];
+  names: Record<string, string>; transitAlertMinutes: number; truncated: boolean;
+}
+const MAX_ROWS = 30000;
+async function pages<T>(build: (from: number, to: number) => PromiseLike<{ data: any; error: { message: string } | null }>, what: string) {
+  const out: T[] = [];
+  for (let from = 0; from < MAX_ROWS; from += 1000) {
+    const data = await call(build(from, from + 999), what) as T[];
+    out.push(...data);
+    if (data.length < 1000) return { rows: out, truncated: false };
+  }
+  return { rows: out, truncated: true };
+}
+/** Everything collected, received, released or delivered between `fromIso` and `toIso`. */
+export async function loadAnalytics(fromIso: string, toIso: string): Promise<AnalyticsData> {
+  const inRange = (col: string) => `and(${col}.gte.${fromIso},${col}.lt.${toIso})`;
+  const runsSince = new Date(new Date(fromIso).getTime() - 2 * 86400e3).toISOString();
+  const [samples, runs, centres, settings, rel, del] = await Promise.all([
+    pages<SampleRow>((a, b) => client().from("samples").select(sampleCols()).or(`${inRange("collected_at")},${inRange("received_at")}`).order("id").range(a, b), "Samples")
+      .catch(async (e) => { if (!/received_by_name/.test(e.message)) throw e; hasReceiverName = false;
+        return pages<SampleRow>((a, b) => client().from("samples").select(sampleCols()).or(`${inRange("collected_at")},${inRange("received_at")}`).order("id").range(a, b), "Samples"); }),
+    pages<CourierRun>((a, b) => client().from("courier_runs").select("*").gte("started_at", runsSince).lt("started_at", toIso).order("id").range(a, b), "Runs"),
+    loadCentres(),
+    loadTransportSettings(),
+    pages<ReportRelease>((a, b) => client().from("report_releases").select("*").gte("released_at", fromIso).lt("released_at", toIso).order("id").range(a, b), "Released reports"),
+    pages<ReportDelivery>((a, b) => client().from("report_deliveries").select("id,sheet_id,r_number,client_name,picked_up_at,status,receiver_name,recorded_at,reason")
+      .gte("picked_up_at", fromIso).lt("picked_up_at", toIso).order("id").range(a, b), "Deliveries"),
+  ]);
+  let audit: SampleAuditRow[] = [], auditMissing = false;
+  try {
+    const r = await pages<SampleAuditRow>((a, b) => client().from("sample_audit").select("*").gte("at", fromIso).lt("at", toIso).order("id").range(a, b), "History");
+    audit = r.rows;
+  } catch { auditMissing = true; }
+  const sheetIds = [...new Set(del.rows.map((d) => d.sheet_id))];
+  const sheets: DeliverySheet[] = [];
+  for (const part of chunks(sheetIds, 150)) sheets.push(...await call(client().from("delivery_sheets").select("id,courier_email,courier_name,location,department,started_at,closed_at,reviewed_by,reviewed_at").in("id", part), "Sheets") as DeliverySheet[]);
+  const names: Record<string, string> = {};
+  try {
+    const staff = await call(client().from("staff").select("email,display_name"), "Staff") as { email: string; display_name: string | null }[];
+    staff.forEach((s) => { if (s.display_name) names[s.email] = s.display_name; });
+  } catch { /* names fall back to the email */ }
+  audit.forEach((r) => { if (r.actor_name && !names[r.actor]) names[r.actor] = r.actor_name; });
+  return { samples: samples.rows, runs: runs.rows, centres, audit, auditMissing, releases: rel.rows, deliveries: del.rows, sheets, names,
+    transitAlertMinutes: settings.transitAlertMinutes, truncated: samples.truncated || rel.truncated || del.truncated };
 }

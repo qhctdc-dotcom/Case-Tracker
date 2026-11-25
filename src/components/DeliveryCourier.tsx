@@ -4,7 +4,7 @@ import { decodePhoto } from "../lib/barcode";
 import { STATUS_LABEL } from "../lib/formTemplate";
 import { fmtIso, fmtTime } from "../lib/tracker";
 import { SignatureImage, SignaturePad } from "./Signature";
-import { Badge, Button, C, Field, Note, inputCls } from "./ui";
+import { Badge, Button, C, Field, Note, inputCls, tint } from "./ui";
 
 const statusColor = (s: string) => (s === "D" ? C.success : s === "pending" ? C.accent : C.warning);
 
@@ -22,14 +22,23 @@ export default function DeliveryCourier({ me, toast }: { me: api.Me; toast: (m: 
   const [showOther, setShowOther] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
+  const [mySites, setMySites] = useState<Set<number>>(new Set());
+
   const load = useCallback(async () => {
     try {
-      const [d, c, w] = await Promise.all([api.loadDeliveries(14, me.email), api.loadCentres().catch(() => []), api.loadWaitingReleases().catch(() => [])]);
+      const [d, c, w, routes] = await Promise.all([api.loadDeliveries(14, me.email), api.loadCentres().catch(() => []), api.loadWaitingReleases().catch(() => []), api.loadRoutes().catch(() => [])]);
       setSheets(d.sheets); setRows(d.rows); setCentres(c.filter((x) => x.active)); setWaiting(w);
+      setMySites(new Set(routes.filter((r) => r.active && r.couriers.includes(me.email)).flatMap((r) => r.sites)));
     } catch (e: any) { toast(e.message, "err"); }
     finally { setLoading(false); }
   }, [me.email, toast]);
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    load();
+    // Show newly released reports as soon as post-analytical releases them
+    let t: number | undefined;
+    const unsub = api.subscribeReleases(() => { clearTimeout(t); t = window.setTimeout(load, 800); });
+    return () => { unsub(); clearTimeout(t); };
+  }, [load]);
 
   const sheet = sheets.find((s) => !s.closed_at) || null;
   const sheetRows = sheet ? rows.filter((r) => r.sheet_id === sheet.id) : [];
@@ -92,6 +101,8 @@ export default function DeliveryCourier({ me, toast }: { me: api.Me; toast: (m: 
         <>
           <h1 className="text-2xl font-semibold text-ink mb-1">Deliver reports</h1>
           <p className="text-ink-2 mb-4">Start a delivery sheet when you collect reports from the lab. Only reports released by post-analytical can be picked up.</p>
+          <ReadyList waiting={waiting} centres={centres} mySites={mySites} chosen={start.location}
+            onChoose={(name) => setStart((s) => ({ ...s, location: name }))} />
           <Field label="Delivery location">
             <input className={inputCls} list="delivery-locations" value={start.location} placeholder="e.g. Tema"
               onChange={(e) => setStart({ ...start, location: e.target.value })} />
@@ -212,6 +223,58 @@ export default function DeliveryCourier({ me, toast }: { me: api.Me; toast: (m: 
         </section>
       )}
     </div>
+  );
+}
+
+/** Results released by the lab and waiting to be collected: each centre with its R#s. The courier's own route sites come first. */
+export function ReadyList({ waiting, centres, mySites, chosen, onChoose }: {
+  waiting: api.ReportRelease[]; centres: api.Centre[]; mySites: Set<number>; chosen: string; onChoose: (name: string) => void;
+}) {
+  const key = (s: string) => s.trim().toLowerCase();
+  const onRoute = new Set(centres.filter((c) => mySites.has(c.id)).map((c) => key(c.name)));
+  const m = new Map<string, api.ReportRelease[]>();
+  waiting.forEach((w) => m.set(w.destination, [...(m.get(w.destination) || []), w]));
+  const groups = [...m.entries()].map(([dest, items]) => ({ dest, items, mine: onRoute.has(key(dest)) }))
+    .sort((a, b) => (a.mine === b.mine ? a.dest.localeCompare(b.dest) : a.mine ? -1 : 1));
+  const mineCount = groups.filter((g) => g.mine).reduce((n, g) => n + g.items.length, 0);
+
+  return (
+    <section className="mb-5">
+      <h2 className="text-lg font-semibold text-ink">Ready for delivery</h2>
+      <p className="text-sm text-ink-2 mb-3">
+        {!waiting.length ? "Nothing is ready yet. This list updates by itself."
+          : `${waiting.length} report${waiting.length === 1 ? "" : "s"} at the lab${mySites.size ? `, ${mineCount} on your routes` : ""}.`}
+      </p>
+      <div className="space-y-3">
+        {groups.map((g) => {
+          const isChosen = key(chosen) === key(g.dest);
+          return (
+            <div key={g.dest} className="card overflow-hidden" style={isChosen ? { borderColor: C.accent, borderWidth: 2 } : undefined}>
+              <div className="px-4 py-3 flex items-center justify-between gap-3 border-b" style={{ borderColor: C.line, background: isChosen ? tint(C.accent, 10) : C.raised }}>
+                <span className="min-w-0">
+                  <span className="block text-lg font-semibold text-ink">{g.dest}</span>
+                  <span className="block text-sm text-ink-2">{g.items.length} report{g.items.length === 1 ? "" : "s"}</span>
+                </span>
+                {g.mine && <Badge color={C.success}>Your route</Badge>}
+              </div>
+              <ul className="px-4 py-2">
+                {g.items.map((w) => (
+                  <li key={w.id} className="py-1 flex gap-3 items-baseline">
+                    <span className="num text-base text-ink font-semibold">R#{w.r_number}</span>
+                    <span className="text-sm text-ink-2 truncate">{w.client_name || ""}</span>
+                  </li>
+                ))}
+              </ul>
+              <div className="px-4 pb-3">
+                <Button tone={isChosen ? "primary" : "ghost"} className="w-full py-2.5" onClick={() => onChoose(g.dest)} aria-pressed={isChosen}>
+                  {isChosen ? `Delivering to ${g.dest}: sign below` : `Deliver here`}
+                </Button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </section>
   );
 }
 
