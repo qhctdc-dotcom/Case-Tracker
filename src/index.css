@@ -37,7 +37,6 @@
   --success: #1c7a4b;
   --alist: #8a6100;
   --track: #e2e7ec;
-  --viz-1: #2a78d6;   /* chart series colour (validated on this surface) */
   --shadow: 0 1px 2px rgb(16 24 40 / 0.06);
   /* specimen tube cap colours */
   --cap-heme: #7a5bc4;
@@ -64,7 +63,6 @@
   --success: #62cf95;
   --alist: #f0c24d;
   --track: #26313d;
-  --viz-1: #3987e5;
   --shadow: none;
   --cap-heme: #a58bf0;
   --cap-micro: #4cc7ba;
@@ -90,7 +88,6 @@
   --success: #005c2e;
   --alist: #5c3d00;
   --track: #d0d0d0;
-  --viz-1: #0033b3;
   --shadow: none;
   --cap-heme: #4b2a9e;
   --cap-micro: #00665e;

@@ -99,36 +99,6 @@ The strip under the header shows the last paste and who made it. **Undo that pas
 
 Use **Print** (prints on white paper regardless of theme) or **Export CSV**.
 
-### Analytics (admins only)
-
-The **Analytics** tab brings together everything the app records. Choose a period (today, yesterday, the last 7, 30 or 90 days, or this month) and, if you want, a single centre or depot. Every figure and chart below then covers that selection.
-
-- **Sample transport:**
-  - samples collected per day, by centre and by courier
-  - collections and emergency collections
-  - average transit time, overall and by centre
-  - tubes over the transit alert time, and tubes still in transit
-  - the busiest collection hours
-- **Reception and staff:**
-  - samples received per day and by staff member
-  - receipts not logged by a courier
-  - receipts undone
-  - the busiest reception hours
-- **Test turnaround (TAT):**
-  - cases, on time, delayed, delay rate and average delay, using the same grace times as the Delay report
-  - delay rate by department
-  - the tests delayed most often
-  - cases overdue right now
-  - TAT comes from the tracker, so it is not split by centre.
-- **Report delivery:**
-  - reports released, picked up, delivered and not delivered
-  - average time from receipt to release, and from pick-up to delivery
-  - delivery outcomes (D, ND, CU, C)
-  - deliveries per day, by destination and by courier
-  - the reasons reports weren't delivered
-
-Hover over or tab to any bar to see its exact figure. **Show table** switches any chart to a table, and **Export all (CSV)** downloads every figure and table at once.
-
 ### Display settings
 
 Click **Display** (top right):
@@ -225,24 +195,11 @@ Create courier accounts in **Staff** with the role **Courier**.
 
 The paper *Proof of delivery of clients' medical reports* form (GHA-POSTF001) is filled in on the courier's phone and printed from the app in the same layout.
 
-### Step 0: reports due back to centres
-
-Sample tracking doesn't stop at reception. **Deliveries → 1. Due back to centres** lists every R# that a courier brought in and pre-analytical received. They are **grouped by the centre or depot each R# was collected from**. An R# stays on the list until its report is released for delivery.
-
-- Each R# shows the client, the number of tubes, when it was received, and its test status from the tracker:
-  - **Tests complete: ready to release**
-  - **n of m tests outstanding**
-  - **Not in tracker**
-- **Release** sends one report to its own centre. **Release n ready** on a centre releases all of that centre's finished reports at once. If a report still has tests outstanding, the app asks before releasing it.
-- Once released, the R# moves to **Delivery sheets → Ready for courier pick-up**, and couriers see it on their phones as ready to collect. If the release is withdrawn before pick-up, the R# comes back to this list.
-- You can filter by period, centre or status, find an R# or barcode, and **Export (CSV)**.
-- Samples scanned in without a courier record are listed under *Centre not recorded*. Release those from **Release reports** and choose the destination there.
-
 ### Step 1: post-analytical releases the reports
 
 Reports can only leave the lab once post-analytical has released them.
 
-1. Go to **Deliveries → 2. Release reports**.
+1. Go to **Deliveries → 1. Release reports**.
 2. Choose the **destination** (a centre, or *Other…*). It is remembered on that computer.
 3. Scan each finished report with the handheld scanner (or type the R# and press Enter). Each scan shows a result:
    - **Released**, with the client name. Ready for the courier.
@@ -253,7 +210,7 @@ Reports can only leave the lab once post-analytical has released them.
 
 ### Step 2: the courier picks up and delivers (on a phone)
 
-1. Sign in and tap **Deliver reports** at the top. A green number on the tab shows how many reports the lab has released. **Results ready for collection** lists them by centre, with the sites on your routes first. It updates by itself as post-analytical releases reports. Tap a centre to fill in the delivery location, or tap **See R#s** to list its reports.
+1. Sign in and tap **Deliver reports** at the top.
 2. Enter the **delivery location** and **department**, **sign** in the box (courier signature) and tap **Start delivery sheet**. This is the pick-up.
 3. **Ready for you to collect** lists the reports released for that location. Tick the ones in hand and tap **Pick up**, or scan them (photo) or type the R#. A report that hasn't been released is refused (*hand it back*); one released for a different place is accepted with a note. The client name comes from the release; if it's missing, tap **Add client name**.
 4. At the client, tap **Record delivery** on the report and choose:
@@ -264,9 +221,7 @@ Reports can only leave the lab once post-analytical has released them.
 
 A report can only be out for delivery on one sheet at a time. **Remove** takes off a report added by mistake (before its outcome is recorded) and puts it back on the released list. Reports marked ND, CU or C go back to post-analytical's **Returned** list.
 
-### Step 3: post-analytical reviews the sheets (Deliveries → 3. Delivery sheets)
-
-- **Ready for courier pick-up** at the top lists released reports by destination, with how long they have been waiting. When a courier picks a report up, it moves onto that courier's delivery sheet below.
+### Step 3: post-analytical reviews the sheets (Deliveries → 2. Delivery sheets)
 
 - Counts of reports out for delivery, delivered and not delivered today, and sheets awaiting review.
 - Each sheet shows its reports, statuses, receivers and signatures. Filter by status or search by R#, client, receiver or courier.
@@ -310,6 +265,8 @@ Tracks requisitions for the **MDS-LANCET LABORATORIES-EMAIL** account from the d
 1. **Emails → Upload today's report**, and choose the file:
    - a **Meditech file** (PDF saved from Meditech, or a text file): read exactly, in a second or two;
    - a **scanned printout** (PDF from the scanner): read by OCR on the computer, about 10 seconds a page. Nothing is sent anywhere for reading.
+   - **Patient Entry List screen captures** (screenshots of the Meditech screen put into a PDF): the numbers are read with a reader made for Meditech's screen font, about 5 seconds a page. Half-visible lines at the edge of a capture are skipped, and rows shown on two overlapping captures are counted once, so take captures that overlap by a row or two.
+   - The check window lists every account heading found (**Which lists to upload**). The EMAIL account is ticked; if the file doesn't name the EMAIL account (as with screen captures), every list starts ticked and staff untick the ones that aren't EMAIL patients.
 2. The **Check this upload** window shows what will change: new, still to work, **already worked and therefore flagged for duplicate removal**, and no longer in the report (cleared).
    - For scans, any row whose Req # wasn't printed clearly is shown with a picture of that line (from the Req # column, so no names). Compare, correct the number if needed, and tick **Correct**, or **Leave out**. All such rows must be resolved before saving.
 3. Choose **Apply full report** (today's complete report) or **Add / update only** (part of a report; nothing is cleared). A warning appears if a large share of requisitions would be cleared.
@@ -376,7 +333,6 @@ More frequent pastes mean fewer *Unclear* cases and tighter delay ranges. The re
 | Release reports for delivery; release returned reports again or withdraw them | | ✓ | ✓ |
 | Fill in report delivery sheets (pick-up, receiver signature, status) | ✓ | | |
 | View, review and print delivery sheets (GHA-POSTF001) | | ✓ | ✓ |
-| Analytics across transport, reception, TAT and delivery | | | ✓ |
 
 Wall display accounts see only the read-only incoming-samples screen. Couriers see only the collection screen and only their own collections; they cannot see the tracker, reports or other couriers' work. Every user can change their own password from the menu under their name. Deactivating someone blocks their sign-in immediately; their past work stays in the records.
 
@@ -419,7 +375,7 @@ Open the Render address. Because nobody exists yet, the app shows **Create the f
 
 ### 5. Upgrading an existing installation
 
-1. Run any of `supabase/03_sample_transport.sql`, `04_fix_table_permissions.sql`, `05_report_delivery.sql`, `06_report_release.sql`, `07_wall_display.sql`, `08_courier_routes.sql`, `09_email_tracking.sql`, `10_load_routes.sql`, `11_email_audit.sql` and `12_sample_receipt_audit.sql` not yet run, in that order, in the SQL Editor.
+1. Run any of `supabase/03_sample_transport.sql`, `04_fix_table_permissions.sql`, `05_report_delivery.sql`, `06_report_release.sql`, `07_wall_display.sql`, `08_courier_routes.sql` and `09_email_tracking.sql` not yet run, in that order, in the SQL Editor.
 2. Redeploy the `manage-staff` Edge Function with the current `supabase/functions/manage-staff/index.ts` (it adds the Courier role and photo clean-up). Keep **Verify JWT** off.
 3. Push the updated code to GitHub so Render redeploys.
 
@@ -477,9 +433,6 @@ src/
     PhotoReview.tsx         Pickup photo gallery and viewer
     DeliveryCourier.tsx     Courier screen for delivering reports
     DeliveriesView.tsx      Lab view of delivery sheets: review, print, export
-    DueBackView.tsx         Received R#s not yet released, grouped by the centre they came from
-    AnalyticsView.tsx       Admin analytics: transport, reception, TAT and delivery
-    charts.tsx              Small chart components used by Analytics
     ReleaseView.tsx         Post-analytical release of reports, waiting and returned lists
     WallDisplay.tsx         TV screen: incoming samples by centre, live
     EmailTrackingView.tsx   Email tracking: upload, review, to work, flagged, worked, uploads
@@ -499,7 +452,6 @@ supabase/
   08_courier_routes.sql     Courier routes, route assignments, emergency collections
   09_email_tracking.sql     Email tracking: uploads, requisitions, worked / flagged / removed, undo
   11_email_audit.sql        Email tracking audit trail (admins only)
-  12_sample_receipt_audit.sql  Who received each sample (by name) + permanent receive/undo history
   10_load_routes.sql        Loads 11 courier routes, 98 route sites and 29 branches/depots (safe to re-run)
   functions/manage-staff/index.ts   Edge Function for staff accounts
   optional_add_staff_by_sql.sql     Manual alternative to the Staff tab
@@ -583,7 +535,6 @@ Department splits are worked out when the page loads, from the current dictionar
 | Courier gets *That site is not on a route assigned to you* | The site isn't on their routes. Add it to the route, or use **Emergency collection** if it's urgent. |
 | Courier sees nothing under *Ready for you to collect* | The sheet's location must match the destination chosen at release (pick it from the list). Reports for other places are under *Show … released for other places*. |
 | "Couldn't load samples" / "Couldn't load centres" | Run `supabase/03_sample_transport.sql`. |
-| Sample **History** says "History isn't set up yet", or receivers show as email names only | Run `supabase/12_sample_receipt_audit.sql`. |
 | Photos are not being deleted | Redeploy the current `manage-staff` function; use **Settings → Delete expired photos now** to test. |
 | A test is in the wrong department | Add or fix its keyword in **Settings → Department keywords** (or accept it from **Unrecognised test names**). |
 

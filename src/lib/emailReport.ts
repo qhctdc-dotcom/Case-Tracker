@@ -4,6 +4,11 @@
 // patient names are never stored.
 import * as pdfjs from "pdfjs-dist";
 import pdfWorker from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+import { imageRect, readScreen, toGray } from "./screenReader";
+
+/** A screen-read Req # whose closest alternative digit is at least this far away needs no checking. */
+const SCREEN_SURE = 8;
+const DATE_RE = /\d{2}\/\d{2}\/\d{2}-\d{2}/;
 
 pdfjs.GlobalWorkerOptions.workerSrc = pdfWorker;
 
@@ -20,20 +25,27 @@ export interface ReportRow {
   confidence: number | null; // OCR confidence of the numbers (0-100), null for digital files
   needsCheck: boolean;
   accSuspect?: boolean;     // Acc # may be misread (shown for reference only; never used for matching)
+  group: string;            // key of the account group it was listed under
   why: string[];           // reasons a person should check this row
   crop?: string;           // image of the line from the scan, for checking only (not stored)
 }
+export interface ReportGroup { key: string; label: string; isEmail: boolean; firstPage: number; lastPage: number; rows: number }
 export interface ParsedReport {
   source: "digital" | "scan" | "text";
+  screen?: boolean;                 // read from Meditech screen captures
+  groups: ReportGroup[];            // each account heading (or unheaded block) in the order found
+  partialSkipped?: number;          // half-visible lines at the edge of screen captures (not read)
+  overlapMerged?: number;           // rows that appeared on two overlapping captures (counted once)
   runDate: string | null;
   pages: number;
   accounts: Record<string, number>; // rows found per account (for information)
-  rows: ReportRow[];                // EMAIL account only
-  unreadable: { page: number; text: string; crop?: string }[]; // EMAIL-account lines that couldn't be read
+  rows: ReportRow[];                // every account; the upload screen picks which groups to keep
+  unreadable: { page: number; text: string; crop?: string; group: string }[]; // lines that couldn't be read
 }
 
 type Box = { x0: number; y0: number; x1: number; y1: number };
-type Line = { text: string; page: number; conf?: number; words?: { text: string; conf: number; bbox?: Box }[]; bbox?: Box };
+type Line = { text: string; page: number; conf?: number; words?: { text: string; conf: number; bbox?: Box }[]; bbox?: Box;
+  screen?: boolean; screenMargin?: number };
 
 const letters = (s: string) => s.toUpperCase().replace(/[^A-Z]/g, "");
 
@@ -66,6 +78,7 @@ async function ocrLines(doc: pdfjs.PDFDocumentProxy, onProgress: (msg: string, p
   await worker.setParameters({ preserve_interword_spaces: "1", tessedit_pageseg_mode: "6" as any });
   const lines: Line[] = [];
   const pageCanvases: HTMLCanvasElement[] = [];
+  let screenPages = 0, partial = 0;
   try {
     for (let p = 1; p <= doc.numPages; p++) {
       onProgress(`Reading page ${p} of ${doc.numPages}…`, Math.round(((p - 1) / doc.numPages) * 100));
@@ -75,15 +88,32 @@ async function ocrLines(doc: pdfjs.PDFDocumentProxy, onProgress: (msg: string, p
       canvas.width = Math.ceil(vp.width); canvas.height = Math.ceil(vp.height);
       await page.render({ canvasContext: canvas.getContext("2d")!, viewport: vp }).promise;
       pageCanvases[p] = canvas;
+      // Meditech screen captures: read the number columns with the screen-font reader
+      const rect = (await imageRect(page, vp, pdfjs)) || { x: 0, y: 0, w: canvas.width, h: canvas.height };
+      const sp = readScreen(toGray(canvas, rect), rect);
+      if (sp.isScreen) { screenPages++; partial += sp.partial; }
       const { data } = await worker.recognize(canvas, {}, { blocks: true });
+      const pageLines: Line[] = [];
       for (const block of (data as any).blocks || []) for (const para of block.paragraphs || []) for (const ln of para.lines || []) {
-        lines.push({ page: p, text: ln.text.trim(), conf: ln.confidence, bbox: ln.bbox,
-          words: (ln.words || []).map((w: any) => ({ text: w.text, conf: w.confidence, bbox: w.bbox })) });
+        const l: Line = { page: p, text: ln.text.trim(), conf: ln.confidence, bbox: ln.bbox,
+          words: (ln.words || []).map((w: any) => ({ text: w.text, conf: w.confidence, bbox: w.bbox })) };
+        // On screen pages keep only headings from general OCR; the rows come from the screen reader
+        if (sp.isScreen && (DATE_RE.test(l.text) || /\d{6}/.test(l.text))) continue;
+        pageLines.push(l);
       }
+      if (sp.isScreen) for (const r of sp.rows) {
+        const conf = r.margin >= SCREEN_SURE ? 99 : 50;
+        const bbox = { x0: r.x0, y0: r.y0, x1: r.x1, y1: r.y1 };
+        pageLines.push({ page: p, screen: true, screenMargin: r.margin, bbox, conf,
+          text: `${r.r_number} ${r.acc_number} ${r.collection} ${r.entered}`,
+          words: [{ text: r.r_number, conf, bbox: { ...bbox, x1: r.x0 + (r.x1 - r.x0) * 0.15 } }] });
+      }
+      pageLines.sort((a, b) => (a.bbox?.y0 ?? 0) - (b.bbox?.y0 ?? 0));
+      lines.push(...pageLines);
     }
   } finally { await worker.terminate(); }
   onProgress("Checking the results…", 100);
-  return { lines, pageCanvases };
+  return { lines, pageCanvases, screenPages, partial };
 }
 
 /** Image of one report line for checking. Starts at the Req # column, so patient names are not shown. */
@@ -110,11 +140,17 @@ const digitsOnly = (t: string) => t.replace(/[Oo]/g, "0").replace(/[Il|]/g, "1")
 export const REQ_CONFIDENCE = 80;
 const DATE = /\d{2}\/\d{2}\/\d{2}-[\dN]{1,4}/g;
 
-export function parseLines(lines: Line[], source: ParsedReport["source"], canvases: HTMLCanvasElement[] = []): ParsedReport {
-  const report: ParsedReport = { source, runDate: null, pages: 0, accounts: {}, rows: [], unreadable: [] };
-  let account = "";
-  let isEmail = false;
-  const seen = new Set<string>();
+export function parseLines(lines: Line[], source: ParsedReport["source"], canvases: HTMLCanvasElement[] = [], screen = false): ParsedReport {
+  const report: ParsedReport = { source, screen, runDate: null, pages: 0, accounts: {}, groups: [], rows: [], unreadable: [] };
+  let group: ReportGroup | null = null;
+  const newGroup = (label: string, page: number) => {
+    // The printed report repeats the account heading on every page: same account, same group
+    const cur = group as ReportGroup | null;
+    if (cur && label && letters(cur.label) === letters(label)) return;
+    group = { key: String(report.groups.length + 1), label: label || "No account heading", isEmail: letters(label).includes(EMAIL_ACCOUNT_KEY), firstPage: page, lastPage: page, rows: 0 };
+    report.groups.push(group);
+  };
+  const byReq = new Map<string, number>(); // r_number -> index in report.rows
 
   for (const ln of lines) {
     report.pages = Math.max(report.pages, ln.page);
@@ -123,7 +159,9 @@ export function parseLines(lines: Line[], source: ParsedReport["source"], canvas
     const run = text.match(/RUN DATE:\s*(\d{2}\/\d{2}\/\d{2})/i);
     if (run && !report.runDate) report.runDate = run[1]!;
     const doc = text.match(/Doctor\s*:\s*(.+)$/i);
-    if (doc) { account = doc[1]!.trim(); isEmail = letters(account).includes(EMAIL_ACCOUNT_KEY); continue; }
+    if (doc) { newGroup(doc[1]!.trim(), ln.page); continue; }
+    // Screen captures: a column-heading line after rows starts a new (unheaded) list
+    if (report.screen && /Req\s*#/i.test(text) && /Acc/i.test(text) && /Date/i.test(text)) { if (group && (group as ReportGroup).rows > 0) newGroup("", ln.page); continue; }
 
     const dates = text.match(DATE) || [];
     const tokens = text.split(" ");
@@ -146,12 +184,13 @@ export function parseLines(lines: Line[], source: ParsedReport["source"], canvas
     const looksLikeRow = dates.length >= 1 && (reqTok || accTok);
     if (!looksLikeRow) continue;
 
-    const accName = account || "(unknown account)";
-    report.accounts[accName] = (report.accounts[accName] || 0) + 1;
-    if (!isEmail) continue;
+    if (!group) newGroup("", ln.page);
+    const g = group as unknown as ReportGroup;
+    g.lastPage = ln.page;
+    report.accounts[g.label] = (report.accounts[g.label] || 0) + 1;
 
     if (!reqTok || !accTok) {
-      report.unreadable.push({ page: ln.page, text: text.replace(/^[^0-9]*?(?=\d{6})/, "… "),
+      report.unreadable.push({ page: ln.page, group: g.key, text: text.replace(/^[^0-9]*?(?=\d{6})/, "… "),
         crop: cropLine(canvases[ln.page], ln.bbox, reqX(ln, reqTok || accTok || "")) });
       continue;
     }
@@ -169,11 +208,23 @@ export function parseLines(lines: Line[], source: ParsedReport["source"], canvas
     if (fixedReq) why.push("Req # needed correcting");
     if (digitsOnly(accTok).length < 6) why.push("Acc # unclear");
     if (dates.length < 2) why.push("a date is missing");
-    if (seen.has(r_number)) why.push("appears twice in this report");
-    seen.add(r_number);
+
+    const prev = byReq.get(r_number);
+    if (prev !== undefined) {
+      const p = report.rows[prev]!;
+      if (report.screen && p.page !== ln.page) {
+        // Overlapping screen captures show some rows twice: keep the clearer copy
+        report.overlapMerged = (report.overlapMerged || 0) + 1;
+        if ((confidence ?? 0) > (p.confidence ?? 0) && !why.length) { p.confidence = confidence; p.needsCheck = false; p.why = []; p.crop = undefined; }
+        continue;
+      }
+      why.push("appears twice in this report");
+    }
+    byReq.set(r_number, report.rows.length);
+    g.rows++;
 
     report.rows.push({
-      r_number, acc_number, collection: dates[0] || "", entered: dates[1] || "", page: ln.page,
+      r_number, acc_number, collection: dates[0] || "", entered: dates[1] || "", page: ln.page, group: g.key,
       confidence, needsCheck: why.length > 0, why,
       crop: why.length && source === "scan" ? cropLine(canvases[ln.page], ln.bbox, reqX(ln, reqTok)) : undefined,
     });
@@ -200,6 +251,14 @@ export async function readReport(file: File, onProgress: (msg: string, pct: numb
   const textLines = await pdfTextLines(doc);
   const chars = textLines.reduce((n, l) => n + l.text.length, 0);
   if (chars > 200 * doc.numPages * 0.25) return parseLines(textLines, "digital"); // has real text
-  const { lines, pageCanvases } = await ocrLines(doc, onProgress);
-  return parseLines(lines, "scan", pageCanvases);
+  const { lines, pageCanvases, screenPages, partial } = await ocrLines(doc, onProgress);
+  const report = parseLines(lines, "scan", pageCanvases, screenPages > 0);
+  if (screenPages) report.partialSkipped = partial;
+  if (!report.runDate) {
+    // Screen captures have no RUN DATE line: use a date in the PDF's title, if any
+    const title = String(((await doc.getMetadata().catch(() => null))?.info as any)?.Title || "");
+    report.runDate = title.match(/\d{2}\/\d{2}\/\d{2}/)?.[0] || null;
+  }
+  return report;
 }
+

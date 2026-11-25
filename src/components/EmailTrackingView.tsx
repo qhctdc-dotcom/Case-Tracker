@@ -37,6 +37,7 @@ export default function EmailTrackingView({ toast, isAdmin }: { toast: (m: strin
   const [reading, setReading] = useState<{ msg: string; pct: number } | null>(null);
   const [report, setReport] = useState<(ParsedReport & { fileName: string }) | null>(null);
   const [checks, setChecks] = useState<CheckState>({});
+  const [groupsOn, setGroupsOn] = useState<Record<string, boolean>>({});
   const [saving, setSaving] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -59,12 +60,15 @@ export default function EmailTrackingView({ toast, isAdmin }: { toast: (m: strin
     try {
       const r = await readReport(file, (msg, pct) => setReading({ msg, pct }));
       if (!r.rows.length && !r.unreadable.length) {
-        toast(`No ${EMAIL_ACCOUNT_LABEL} rows found in "${file.name}". Check it is the Doctor's Patient Search report.`, "err");
+        toast(`No requisition rows found in "${file.name}". Check it is the Meditech report or the Patient Entry List.`, "err");
         return;
       }
       const c: CheckState = {};
       r.rows.forEach((row, i) => { if (row.needsCheck) c[i] = { r: row.r_number, acc: row.acc_number, ok: false, skip: false }; });
       setChecks(c);
+      // Keep the EMAIL account's rows; if the report names no EMAIL account, start with every group ticked
+      const hasEmail = r.groups.some((g) => g.isEmail);
+      setGroupsOn(Object.fromEntries(r.groups.map((g) => [g.key, hasEmail ? g.isEmail : true])));
       setReport({ ...r, fileName: file.name });
     } catch (e: any) {
       toast(`Couldn't read "${file.name}": ${e.message}`, "err");
@@ -75,15 +79,18 @@ export default function EmailTrackingView({ toast, isAdmin }: { toast: (m: strin
     if (!report) return [];
     return report.rows.flatMap((row, i) => {
       const c = checks[i];
-      if (c?.skip) return [];
+      if (c?.skip || !groupsOn[row.group]) return [];
       const r = (c ? c.r : row.r_number).replace(/\D/g, "");
       return [{ r_number: r, acc_number: c ? c.acc.toUpperCase().replace(/[^A-Z0-9]/g, "") : row.acc_number,
         collection: row.collection, entered: row.entered }];
     });
-  }, [report, checks]);
+  }, [report, checks, groupsOn]);
 
-  const unresolved = Object.values(checks).filter((c) => !c.ok && !c.skip).length;
-  const badReq = Object.values(checks).filter((c) => !c.skip && !/^\d{9}$/.test(c.r.replace(/\D/g, ""))).length;
+  // Only rows in the ticked groups need checking
+  const activeChecks = Object.entries(checks).filter(([k]) => report && groupsOn[report.rows[Number(k)]?.group ?? ""]);
+  const unresolved = activeChecks.filter(([, c]) => !c.ok && !c.skip).length;
+  const badReq = activeChecks.filter(([, c]) => !c.skip && !/^\d{9}$/.test(c.r.replace(/\D/g, ""))).length;
+  const unreadableOn = report ? report.unreadable.filter((u) => groupsOn[u.group]).length : 0;
 
   async function apply(mode: "full" | "partial") {
     if (!report) return;
@@ -161,7 +168,7 @@ export default function EmailTrackingView({ toast, isAdmin }: { toast: (m: strin
       <div className="flex items-start justify-between gap-4 flex-wrap mb-5">
         <div>
           <h1 className="text-xl font-semibold text-ink">Email tracking</h1>
-          <p className="text-sm text-ink-2">{EMAIL_ACCOUNT_LABEL}. Upload each day's Meditech report (scanned printout or Meditech file).</p>
+          <p className="text-sm text-ink-2">{EMAIL_ACCOUNT_LABEL}. Upload each day's Meditech report: a scanned printout, a Meditech file, or Patient Entry List screen captures.</p>
           {latest && <p className="text-sm text-ink-3 mt-0.5">Last upload: {latest.file_name} ({latest.run_date ? `run ${latest.run_date}, ` : ""}{fmtIso(latest.uploaded_at)} by {latest.uploaded_by.split("@")[0]}). <button className="text-accent underline cursor-pointer" onClick={undoUpload}>Undo it</button></p>}
         </div>
         <div>
@@ -268,11 +275,29 @@ export default function EmailTrackingView({ toast, isAdmin }: { toast: (m: strin
         {report && p && (
           <>
             <p className="text-sm text-ink-2 mb-3">
-              <b>{report.fileName}</b>: {report.source === "scan" ? "scanned printout (read by OCR)" : "Meditech file"}
-              {report.runDate ? `, report run ${report.runDate}` : ""}, {report.pages} page{report.pages === 1 ? "" : "s"}.
-              {" "}{report.rows.length} {EMAIL_ACCOUNT_LABEL} row{report.rows.length === 1 ? "" : "s"} found
-              {Object.keys(report.accounts).length > 1 && <> (other accounts ignored: {Object.entries(report.accounts).filter(([k]) => !k.toUpperCase().replace(/[^A-Z]/g, "").includes("LANCETLABORATORIESEMAIL")).map(([k, n]) => `${k} ${n}`).join(", ")})</>}.
+              <b>{report.fileName}</b>: {report.screen ? "Meditech screen captures" : report.source === "scan" ? "scanned printout (read by OCR)" : "Meditech file"}
+              {report.runDate ? `, ${report.screen ? "list for" : "report run"} ${report.runDate}` : ""}, {report.pages} page{report.pages === 1 ? "" : "s"}.
+              {" "}{finalRows.length} requisition{finalRows.length === 1 ? "" : "s"} will be uploaded.
+              {!!report.overlapMerged && <> {report.overlapMerged} shown twice on overlapping captures were counted once.</>}
+              {!!report.partialSkipped && <> {report.partialSkipped} half-visible line{report.partialSkipped === 1 ? " was" : "s were"} skipped at the edges of captures (each is normally shown in full on the next capture).</>}
             </p>
+
+            <div className="mb-4">
+              <p className="font-semibold text-ink mb-1">Which lists to upload</p>
+              {!report.groups.some((g) => g.isEmail) && (
+                <Note tone="warn">This file doesn't name the <b>{EMAIL_ACCOUNT_LABEL}</b> account. Untick any list below that isn't EMAIL-account patients.</Note>
+              )}
+              <ul className="space-y-1">
+                {report.groups.filter((g) => g.rows > 0 || report.unreadable.some((u) => u.group === g.key)).map((g) => (
+                  <li key={g.key}>
+                    <label className="flex items-center gap-2 text-sm text-ink cursor-pointer">
+                      <input type="checkbox" className="w-4 h-4" checked={!!groupsOn[g.key]} onChange={(e) => setGroupsOn({ ...groupsOn, [g.key]: e.target.checked })} />
+                      <span><b>{g.label}</b>{g.isEmail && <Badge color={C.accent}>EMAIL</Badge>} <span className="text-ink-3">{g.rows} row{g.rows === 1 ? "" : "s"}, page{g.firstPage === g.lastPage ? ` ${g.firstPage}` : `s ${g.firstPage}–${g.lastPage}`}</span></span>
+                    </label>
+                  </li>
+                ))}
+              </ul>
+            </div>
 
             <dl className="text-sm mb-4">
               {([["New to the list", p.new], ["Still to work (carried over)", p.carried], ["Already worked: will be FLAGGED for duplicate removal", p.flagged.length],
@@ -286,12 +311,12 @@ export default function EmailTrackingView({ toast, isAdmin }: { toast: (m: strin
 
             {bigClear && <Note tone="warn"><b>Is this the whole report?</b> {p.cleared} requisitions would be cleared. If you uploaded only part of the report, use <b>Add / update only</b>.</Note>}
 
-            {Object.keys(checks).length > 0 && (
+            {activeChecks.length > 0 && (
               <div className="mb-4">
-                <p className="font-semibold text-ink mb-1">Please check {Object.keys(checks).length} row{Object.keys(checks).length === 1 ? "" : "s"} the scan couldn't read clearly</p>
+                <p className="font-semibold text-ink mb-1">Please check {activeChecks.length} row{activeChecks.length === 1 ? "" : "s"} the scan couldn't read clearly</p>
                 <p className="text-xs text-ink-3 mb-2">Compare the number with the picture. Correct it if needed, then tick <b>Correct</b>, or <b>Leave out</b> the row.</p>
                 <ul className="space-y-2">
-                  {Object.entries(checks).map(([k, c]) => {
+                  {activeChecks.map(([k, c]) => {
                     const row = report.rows[Number(k)] as ReportRow;
                     const valid = /^\d{9}$/.test(c.r.replace(/\D/g, ""));
                     return (
@@ -316,18 +341,18 @@ export default function EmailTrackingView({ toast, isAdmin }: { toast: (m: strin
                 </ul>
               </div>
             )}
-            {report.unreadable.length > 0 && (
-              <Note tone="err">{report.unreadable.length} line{report.unreadable.length === 1 ? "" : "s"} couldn't be read at all and will be left out. If one of them matters, upload a clearer scan or the Meditech file.</Note>
+            {unreadableOn > 0 && (
+              <Note tone="err">{unreadableOn} line{unreadableOn === 1 ? "" : "s"} couldn't be read at all and will be left out. If one of them matters, upload a clearer scan or the Meditech file.</Note>
             )}
 
             {unresolved > 0 && <p className="text-sm mb-2" style={{ color: C.warning }}>Tick <b>Correct</b> or <b>Leave out</b> on every row above before saving ({unresolved} left).</p>}
             <div className="grid sm:grid-cols-[1fr_1fr_auto] gap-3 items-start">
               <div>
-                <Button tone="primary" className="w-full" disabled={saving || unresolved > 0 || badReq > 0} onClick={() => apply("full")}>{saving ? "Saving…" : "Apply full report"}</Button>
+                <Button tone="primary" className="w-full" disabled={saving || unresolved > 0 || badReq > 0 || !finalRows.length} onClick={() => apply("full")}>{saving ? "Saving…" : "Apply full report"}</Button>
                 <p className="text-xs text-ink-3 mt-1">This is today's complete report. Requisitions not in it are cleared.</p>
               </div>
               <div>
-                <Button className="w-full" disabled={saving || unresolved > 0 || badReq > 0} onClick={() => apply("partial")}>Add / update only</Button>
+                <Button className="w-full" disabled={saving || unresolved > 0 || badReq > 0 || !finalRows.length} onClick={() => apply("partial")}>Add / update only</Button>
                 <p className="text-xs text-ink-3 mt-1">Part of the report. Nothing is cleared.</p>
               </div>
               <Button tone="quiet" disabled={saving} onClick={() => setReport(null)}>Cancel</Button>
