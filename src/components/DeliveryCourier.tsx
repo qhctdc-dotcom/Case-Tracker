@@ -1,221 +1,160 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as api from "../lib/api";
 import { decodePhoto } from "../lib/barcode";
-import { STATUS_LABEL } from "../lib/formTemplate";
 import { fmtIso, fmtTime } from "../lib/tracker";
-import { SignatureImage, SignaturePad } from "./Signature";
+import { SignaturePad } from "./Signature";
 import { Badge, Button, C, Field, Note, inputCls, tint } from "./ui";
 
-const statusColor = (s: string) => (s === "D" ? C.success : s === "pending" ? C.accent : C.warning);
+/*
+  Courier: deliver reports. Three simple screens.
+    Home     - every centre, with the reports ready for it at the lab and the reports already with you.
+    Pick up  - tick the reports you have in hand, sign once, done.
+    Deliver  - at the centre: the receiver signs once for everything handed over;
+               anything not handed over gets a reason. The sheet then goes to the lab by itself.
+*/
+
+type Screen = { kind: "home" } | { kind: "pickup"; place: string } | { kind: "deliver"; sheetId: number };
+const norm = (s: string) => s.trim().toLowerCase().replace(/\s+/g, " ");
 
 export default function DeliveryCourier({ me, toast }: { me: api.Me; toast: (m: string, t?: "ok" | "err") => void }) {
   const [sheets, setSheets] = useState<api.DeliverySheet[]>([]);
   const [rows, setRows] = useState<api.ReportDelivery[]>([]);
   const [centres, setCentres] = useState<api.Centre[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState<string | null>(null);
-  const [start, setStart] = useState({ location: "", department: "Post-Analytical", signature: "" });
-  const [code, setCode] = useState("");
-  const [active, setActive] = useState<api.ReportDelivery | null>(null);
   const [waiting, setWaiting] = useState<api.ReportRelease[]>([]);
-  const [picked, setPicked] = useState<Record<string, boolean>>({});
-  const [showOther, setShowOther] = useState(false);
-  const fileRef = useRef<HTMLInputElement>(null);
-
-  const [mySites, setMySites] = useState<Set<number>>(new Set());
+  const [loading, setLoading] = useState(true);
+  const [screen, setScreen] = useState<Screen>({ kind: "home" });
+  const [search, setSearch] = useState("");
+  const [showAll, setShowAll] = useState(false);
 
   const load = useCallback(async () => {
     try {
-      const [d, c, w, routes] = await Promise.all([api.loadDeliveries(14, me.email), api.loadCentres().catch(() => []), api.loadWaitingReleases().catch(() => []), api.loadRoutes().catch(() => [])]);
+      const [d, c, w] = await Promise.all([api.loadDeliveries(14, me.email), api.loadCentres().catch(() => []), api.loadWaitingReleases().catch(() => [])]);
       setSheets(d.sheets); setRows(d.rows); setCentres(c.filter((x) => x.active)); setWaiting(w);
-      setMySites(new Set(routes.filter((r) => r.active && r.couriers.includes(me.email)).flatMap((r) => r.sites)));
     } catch (e: any) { toast(e.message, "err"); }
     finally { setLoading(false); }
   }, [me.email, toast]);
+  useEffect(() => { load(); }, [load]);
+  // Keep the lists current: when the app comes back on screen, and every minute
   useEffect(() => {
-    load();
-    // Show newly released reports as soon as post-analytical releases them
-    let t: number | undefined;
-    const unsub = api.subscribeReleases(() => { clearTimeout(t); t = window.setTimeout(load, 800); });
-    return () => { unsub(); clearTimeout(t); };
+    const onShow = () => { if (document.visibilityState === "visible") load(); };
+    document.addEventListener("visibilitychange", onShow);
+    const t = window.setInterval(onShow, 60_000);
+    return () => { document.removeEventListener("visibilitychange", onShow); clearInterval(t); };
   }, [load]);
 
-  const sheet = sheets.find((s) => !s.closed_at) || null;
-  const sheetRows = sheet ? rows.filter((r) => r.sheet_id === sheet.id) : [];
-  const pending = sheetRows.filter((r) => r.status === "pending").length;
+  const openSheets = sheets.filter((s) => !s.closed_at);
+  useEffect(() => {
+    if (screen.kind === "deliver" && !sheets.some((x) => x.id === screen.sheetId && !x.closed_at)) setScreen({ kind: "home" });
+  }, [screen, sheets]);
+  // Sheets left empty for more than 10 minutes (e.g. from the old screen) are closed quietly
+  useEffect(() => {
+    const stale = sheets.filter((s) => !s.closed_at && !rows.some((r) => r.sheet_id === s.id) && Date.now() - new Date(s.started_at).getTime() > 600e3);
+    if (stale.length) Promise.all(stale.map((s) => api.closeDeliverySheet(s.id).catch(() => {}))).then(() => load());
+  }, [sheets, rows, load]);
+  const sheetRows = (id: number) => rows.filter((r) => r.sheet_id === id);
 
-  async function begin() {
-    if (!start.location.trim()) return toast("Enter the delivery location.", "err");
-    if (!start.signature) return toast("Sign in the box to confirm you are collecting these reports.", "err");
-    setBusy("Starting…");
-    try { await api.startDeliverySheet(start.location, start.department, start.signature); await load(); }
-    catch (e: any) { toast(e.message, "err"); } finally { setBusy(null); }
-  }
-
-  async function add(codes: string[]) {
-    if (!sheet || !codes.length) return;
-    setBusy("Adding…");
-    try {
-      const res = await api.addReports(sheet.id, codes);
-      const added = res.filter((r) => r.result === "added").length;
-      const issues = res.filter((r) => r.result !== "added").map((r) =>
-        r.result === "no_r_number" ? `"${r.code}" has no R# number.`
-        : r.result === "not_released" ? `R#${r.r_number} hasn't been released by post-analytical: hand it back.`
-        : r.result === "already_on_this_sheet" ? `R#${r.r_number} is already on this sheet.` : `R#${r.r_number} is already out for delivery on another sheet.`);
-      const otherDest = res.filter((r) => r.result === "added" && r.other_destination).map((r) => `R#${r.r_number} was released for ${r.destination}.`);
-      issues.push(...otherDest);
-      toast([added ? `${added} report${added === 1 ? "" : "s"} added.` : "", ...issues].filter(Boolean).join(" "), issues.length && !added ? "err" : "ok");
-      setCode("");
-      setPicked({});
-      await load();
-    } catch (e: any) { toast(e.message, "err"); } finally { setBusy(null); }
-  }
-
-  async function onPhoto(file?: File) {
-    if (!file) return;
-    setBusy("Reading barcodes…");
-    try {
-      const codes = await decodePhoto(file);
-      if (!codes.length) toast("No barcode could be read. Try again closer, or type the R#.", "err");
-      else await add(codes);
-    } catch (e: any) { toast(e.message, "err"); }
-    finally { setBusy(null); if (fileRef.current) fileRef.current.value = ""; }
-  }
-
-  async function close() {
-    if (!sheet) return;
-    if (!confirm(`Close this delivery sheet (${sheetRows.length} reports)? The lab will then review it.`)) return;
-    try { await api.closeDeliverySheet(sheet.id); toast("Sheet closed and sent to the lab for review."); await load(); }
-    catch (e: any) { toast(e.message, "err"); }
-  }
+  /** Every place: active centres plus any other destination reports were released for. */
+  const places = useMemo(() => {
+    const m = new Map<string, { name: string; ready: api.ReportRelease[]; sheet: api.DeliverySheet | null }>();
+    const get = (name: string) => { const k = norm(name); if (!m.has(k)) m.set(k, { name, ready: [], sheet: null }); return m.get(k)!; };
+    centres.forEach((c) => get(c.name));
+    waiting.forEach((w) => get(w.destination).ready.push(w));
+    openSheets.forEach((s) => { const p = get(s.location); if (!p.sheet) p.sheet = s; });
+    return [...m.values()];
+  }, [centres, waiting, openSheets]);
 
   if (loading) return <p className="p-6 text-ink-3">Loading…</p>;
 
-  if (active && sheet) {
-    return <RecordDelivery row={active} onCancel={() => setActive(null)} onSaved={async () => { setActive(null); await load(); }} toast={toast} />;
+  if (screen.kind === "pickup") {
+    const place = places.find((p) => norm(p.name) === norm(screen.place));
+    return <PickUp place={screen.place} ready={place?.ready || []} existing={place?.sheet || null} toast={toast}
+      onBack={() => setScreen({ kind: "home" })} onDone={async () => { await load(); setScreen({ kind: "home" }); }} />;
   }
+  const deliverSheet = screen.kind === "deliver" ? sheets.find((x) => x.id === screen.sheetId && !x.closed_at) : undefined;
+  if (screen.kind === "deliver" && deliverSheet) {
+    const s = deliverSheet;
+    return <Deliver sheet={s} rows={sheetRows(s.id)} toast={toast} reload={load}
+      onBack={() => setScreen({ kind: "home" })} onFinished={async () => { await load(); setScreen({ kind: "home" }); }} />;
+  }
+
+  /* ---------------- Home ---------------- */
+  const q = norm(search);
+  const withYou = openSheets.filter((s) => sheetRows(s.id).length).map((s) => ({ s, pending: sheetRows(s.id).filter((r) => r.status === "pending") }));
+  const readyPlaces = places.filter((p) => p.ready.length && (!q || norm(p.name).includes(q))).sort((a, b) => b.ready.length - a.ready.length || a.name.localeCompare(b.name));
+  const quiet = places.filter((p) => !p.ready.length && (!q || norm(p.name).includes(q))).sort((a, b) => a.name.localeCompare(b.name));
+  const totalReady = waiting.length;
+  const recent = sheets.filter((s) => s.closed_at && sheetRows(s.id).length).slice(0, 6);
 
   return (
     <div className="max-w-lg mx-auto px-4 py-5">
-      {!sheet && (
-        <>
-          <h1 className="text-2xl font-semibold text-ink mb-1">Deliver reports</h1>
-          <p className="text-ink-2 mb-4">Start a delivery sheet when you collect reports from the lab. Only reports released by post-analytical can be picked up.</p>
-          <ReadyList waiting={waiting} centres={centres} mySites={mySites} chosen={start.location}
-            onChoose={(name) => setStart((s) => ({ ...s, location: name }))} />
-          <Field label="Delivery location">
-            <input className={inputCls} list="delivery-locations" value={start.location} placeholder="e.g. Tema"
-              onChange={(e) => setStart({ ...start, location: e.target.value })} />
-            <datalist id="delivery-locations">{centres.map((c) => <option key={c.id} value={c.name} />)}</datalist>
-          </Field>
-          <Field label="Department"><input className={inputCls} value={start.department} onChange={(e) => setStart({ ...start, department: e.target.value })} /></Field>
-          <div className="mb-4"><SignaturePad label="Courier signature" onChange={(p) => setStart((s) => ({ ...s, signature: p }))} /></div>
-          <Button tone="primary" className="w-full py-3.5 text-lg" disabled={!!busy} onClick={begin}>{busy || "Start delivery sheet"}</Button>
-        </>
+      {withYou.length > 0 && (
+        <section className="mb-6">
+          <h2 className="text-xl font-semibold text-ink mb-2">With you: deliver now</h2>
+          <ul className="space-y-2">
+            {withYou.map(({ s, pending }) => (
+              <li key={s.id}>
+                <button onClick={() => setScreen({ kind: "deliver", sheetId: s.id })} className="card w-full text-left px-4 py-4 cursor-pointer flex items-center gap-3"
+                  style={{ borderLeft: `6px solid ${C.accent}` }}>
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-lg font-semibold text-ink">{s.location}</span>
+                    <span className="block text-sm text-ink-2">{pending.length ? `${pending.length} report${pending.length === 1 ? "" : "s"} to hand over.` : "All recorded: send the sheet to the lab."} Picked up {fmtTime(s.started_at)}.</span>
+                  </span>
+                  <span className="text-accent font-semibold">Deliver ›</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
       )}
 
-      {sheet && (
-        <>
-          <div className="card p-4 mb-4">
-            <p className="text-sm text-ink-3">Delivering to</p>
-            <p className="text-2xl font-semibold text-ink">{sheet.location}</p>
-            <p className="text-sm text-ink-2">Picked up {fmtTime(sheet.started_at)}. {sheetRows.length} report{sheetRows.length === 1 ? "" : "s"}, {pending} still to deliver.</p>
-          </div>
+      <section className="mb-6">
+        <h2 className="text-xl font-semibold text-ink mb-1">Ready at the lab</h2>
+        <p className="text-sm text-ink-2 mb-3">{totalReady ? `${totalReady} report${totalReady === 1 ? "" : "s"} released and waiting for pick-up. Tap a centre to pick up its reports.` : "No reports are waiting for pick-up right now."}</p>
+        {places.length > 8 && <input className={`${inputCls} mb-3`} placeholder="Find a centre" value={search} onChange={(e) => setSearch(e.target.value)} />}
+        <ul className="space-y-2">
+          {readyPlaces.map((p) => (
+            <li key={p.name}>
+              <button onClick={() => setScreen({ kind: "pickup", place: p.name })} className="card w-full text-left px-4 py-3.5 cursor-pointer">
+                <span className="flex items-center gap-3">
+                  <span className="min-w-0 flex-1 text-lg font-semibold text-ink">{p.name}</span>
+                  <span className="rounded-full px-3 py-1 text-base font-bold num" style={{ background: tint(C.success, 15), color: C.success }}>{p.ready.length}</span>
+                </span>
+                <span className="block text-sm text-ink-2 mt-1 num">
+                  {p.ready.slice(0, 4).map((w) => `R#${w.r_number}`).join("  ")}{p.ready.length > 4 ? `  +${p.ready.length - 4} more` : ""}
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      </section>
 
-          {(() => {
-            const here = waiting.filter((w) => w.destination.trim().toLowerCase() === sheet.location.trim().toLowerCase());
-            const elsewhere = waiting.filter((w) => !here.includes(w));
-            const chosen = Object.keys(picked).filter((k) => picked[k]);
-            const row = (w: api.ReportRelease) => (
-              <li key={w.id}>
-                <label className="flex items-center gap-3 px-4 py-3 cursor-pointer border-b" style={{ borderColor: C.line }}>
-                  <input type="checkbox" className="w-6 h-6 accent-[var(--accent)]" checked={!!picked[w.r_number]}
-                    onChange={(e) => setPicked({ ...picked, [w.r_number]: e.target.checked })} />
-                  <span className="min-w-0">
-                    <span className="num text-lg text-ink">R#{w.r_number}</span>
-                    <span className="block text-sm text-ink-2">{w.client_name || ""}{w.destination.toLowerCase() !== sheet.location.toLowerCase() ? ` (for ${w.destination})` : ""}</span>
-                  </span>
-                </label>
-              </li>
-            );
-            return (
-              <div className="card mb-4 overflow-hidden">
-                <div className="px-4 py-3 border-b" style={{ borderColor: C.line, background: C.raised }}>
-                  <p className="font-semibold text-ink">Ready for you to collect</p>
-                  <p className="text-sm text-ink-2">{here.length ? `${here.length} report${here.length === 1 ? "" : "s"} released for ${sheet.location}. Tick the ones you have in hand, or scan them below.` : `No reports released for ${sheet.location} right now.`}</p>
-                </div>
-                <ul>{here.map(row)}</ul>
-                {elsewhere.length > 0 && (
-                  <div className="px-4 py-2">
-                    <button className="text-sm text-accent underline cursor-pointer" onClick={() => setShowOther(!showOther)}>
-                      {showOther ? "Hide" : "Show"} {elsewhere.length} report{elsewhere.length === 1 ? "" : "s"} released for other places
-                    </button>
-                  </div>
-                )}
-                {showOther && <ul>{elsewhere.map(row)}</ul>}
-                {chosen.length > 0 && (
-                  <div className="p-3"><Button tone="primary" className="w-full py-3" disabled={!!busy} onClick={() => add(chosen)}>Pick up {chosen.length} report{chosen.length === 1 ? "" : "s"}</Button></div>
-                )}
-              </div>
-            );
-          })()}
-
-          <input ref={fileRef} type="file" accept="image/*" capture="environment" className="sr-only" id="report-photo"
-            onChange={(e) => onPhoto(e.target.files?.[0])} />
-          <label htmlFor="report-photo" className={`flex items-center justify-center w-full rounded-xl py-5 text-lg font-semibold cursor-pointer mb-2 ${busy ? "opacity-60 pointer-events-none" : ""}`}
-            style={{ background: C.accent, color: "var(--accent-ink)" }}>{busy || "Or scan report barcodes (photo)"}</label>
-          <div className="flex gap-2 mb-5">
-            <input className={inputCls} inputMode="numeric" placeholder="Or type the R# number" value={code}
-              onChange={(e) => setCode(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && code.trim()) add([code.trim()]); }} />
-            <Button disabled={!code.trim() || !!busy} onClick={() => add([code.trim()])}>Add</Button>
-          </div>
-
-          {sheetRows.length > 0 && (
-            <ul className="space-y-2 mb-5">
-              {sheetRows.map((r) => (
-                <li key={r.id} className="card px-4 py-3">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="num text-lg text-ink">R#{r.r_number}</div>
-                      <div className="text-sm text-ink-2">{r.client_name || (
-                        <button className="underline text-accent cursor-pointer" onClick={async () => {
-                          const n = prompt(`Client name for R#${r.r_number}:`);
-                          if (n && n.trim()) { try { await api.setDeliveryClient(r.id, n); await load(); } catch (e: any) { toast(e.message, "err"); } }
-                        }}>Add client name</button>)}</div>
-                    </div>
-                    <Badge color={statusColor(r.status)}>{STATUS_LABEL[r.status]}</Badge>
-                  </div>
-                  {r.status === "pending" ? (
-                    <div className="flex gap-2 mt-3">
-                      <Button tone="primary" className="flex-1 py-2.5" onClick={() => setActive(r)}>Record delivery</Button>
-                      <Button onClick={async () => { if (confirm(`Remove R#${r.r_number} from this sheet?`)) { try { await api.removeDelivery(r.id); await load(); } catch (e: any) { toast(e.message, "err"); } } }}>Remove</Button>
-                    </div>
-                  ) : (
-                    <div className="text-sm text-ink-2 mt-1 flex items-center gap-2 flex-wrap">
-                      {r.status === "D" ? <>Received by {r.receiver_name} <SignatureImage path={r.receiver_signature} height={24} /></> : r.reason}
-                      <span className="text-ink-3">{fmtTime(r.recorded_at)}</span>
-                    </div>
-                  )}
+      {quiet.length > 0 && (
+        <section className="mb-6">
+          <button className="text-sm text-accent underline cursor-pointer" onClick={() => setShowAll(!showAll)}>
+            {showAll ? "Hide" : "Show"} the other {quiet.length} centre{quiet.length === 1 ? "" : "s"} (nothing ready)
+          </button>
+          {showAll && (
+            <ul className="card mt-2 overflow-hidden">
+              {quiet.map((p) => (
+                <li key={p.name} className="flex items-center justify-between px-4 py-2.5 border-b last:border-b-0" style={{ borderColor: C.line }}>
+                  <span className="text-ink">{p.name}</span><span className="text-sm text-ink-3">Nothing ready</span>
                 </li>
               ))}
             </ul>
           )}
-          <Button className="w-full py-3" disabled={!sheetRows.length || pending > 0} onClick={close}>
-            {pending ? `Record all reports before closing (${pending} left)` : "Close sheet and send to the lab"}
-          </Button>
-        </>
+        </section>
       )}
 
-      {sheets.filter((s) => s.closed_at).length > 0 && (
-        <section className="mt-8">
-          <h2 className="font-semibold text-ink mb-2">Recent sheets</h2>
+      {recent.length > 0 && (
+        <section>
+          <h2 className="font-semibold text-ink mb-2">Done recently</h2>
           <ul className="space-y-2">
-            {sheets.filter((s) => s.closed_at).slice(0, 8).map((s) => {
-              const rs = rows.filter((r) => r.sheet_id === s.id);
+            {recent.map((s) => {
+              const rs = sheetRows(s.id); const d = rs.filter((r) => r.status === "D").length;
               return (
                 <li key={s.id} className="card px-4 py-3 text-sm">
-                  <div className="flex justify-between gap-3"><span className="text-ink">{s.location}</span><span className="text-ink-3">{fmtIso(s.closed_at)}</span></div>
-                  <div className="text-ink-2">{rs.filter((r) => r.status === "D").length} of {rs.length} delivered. {s.reviewed_at ? `Reviewed by ${s.reviewed_by}.` : "Awaiting lab review."}</div>
+                  <div className="flex justify-between gap-3"><span className="text-ink font-medium">{s.location}</span><span className="text-ink-3">{fmtIso(s.closed_at)}</span></div>
+                  <div className="text-ink-2">{d} of {rs.length} delivered{d < rs.length ? `, ${rs.length - d} brought back` : ""}. {s.reviewed_at ? "Checked by the lab." : "Waiting for the lab to check."}</div>
                 </li>
               );
             })}
@@ -226,104 +165,216 @@ export default function DeliveryCourier({ me, toast }: { me: api.Me; toast: (m: 
   );
 }
 
-/** Results released by the lab and waiting to be collected: each centre with its R#s. The courier's own route sites come first. */
-export function ReadyList({ waiting, centres, mySites, chosen, onChoose }: {
-  waiting: api.ReportRelease[]; centres: api.Centre[]; mySites: Set<number>; chosen: string; onChoose: (name: string) => void;
+/* ---------------- Pick up at the lab ---------------- */
+function PickUp({ place, ready, existing, onBack, onDone, toast }: {
+  place: string; ready: api.ReportRelease[]; existing: api.DeliverySheet | null;
+  onBack: () => void; onDone: () => void; toast: (m: string, t?: "ok" | "err") => void;
 }) {
-  const key = (s: string) => s.trim().toLowerCase();
-  const onRoute = new Set(centres.filter((c) => mySites.has(c.id)).map((c) => key(c.name)));
-  const m = new Map<string, api.ReportRelease[]>();
-  waiting.forEach((w) => m.set(w.destination, [...(m.get(w.destination) || []), w]));
-  const groups = [...m.entries()].map(([dest, items]) => ({ dest, items, mine: onRoute.has(key(dest)) }))
-    .sort((a, b) => (a.mine === b.mine ? a.dest.localeCompare(b.dest) : a.mine ? -1 : 1));
-  const mineCount = groups.filter((g) => g.mine).reduce((n, g) => n + g.items.length, 0);
+  const [picked, setPicked] = useState<Record<string, boolean>>(() => Object.fromEntries(ready.map((w) => [w.r_number, true])));
+  const [extra, setExtra] = useState<string[]>([]);
+  const [code, setCode] = useState("");
+  const [sig, setSig] = useState("");
+  const [busy, setBusy] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const chosen = [...ready.filter((w) => picked[w.r_number]).map((w) => w.r_number), ...extra];
+
+  function addCode(c: string) {
+    const r = c.replace(/\s/g, "");
+    if (!r) return;
+    const known = ready.find((w) => w.r_number === r.replace(/\D/g, "") || r.includes(w.r_number));
+    if (known) setPicked((p) => ({ ...p, [known.r_number]: true }));
+    else if (!extra.includes(r)) setExtra((x) => [...x, r]);
+    setCode("");
+  }
+  async function onPhoto(file?: File) {
+    if (!file) return;
+    setBusy("Reading barcodes…");
+    try { const codes = await decodePhoto(file); if (!codes.length) toast("No barcode could be read. Try again closer, or type the R#.", "err"); else codes.forEach(addCode); }
+    catch (e: any) { toast(e.message, "err"); }
+    finally { setBusy(null); if (fileRef.current) fileRef.current.value = ""; }
+  }
+
+  async function confirm() {
+    if (!chosen.length) return setErr("Tick the reports you have in hand.");
+    if (!existing && !sig) return setErr("Sign in the box to confirm you are taking these reports.");
+    setErr(null); setBusy("Saving…");
+    try {
+      const sheetId = existing ? existing.id : await api.startDeliverySheet(place, "Post-Analytical", sig);
+      const res = await api.addReports(sheetId, chosen);
+      const added = res.filter((r) => r.result === "added").length;
+      const problems = res.filter((r) => r.result !== "added").map((r) =>
+        r.result === "no_r_number" ? `"${r.code}" is not an R# number`
+        : r.result === "not_released" ? `R#${r.r_number} has not been released: give it back to post-analytical`
+        : r.result === "already_on_this_sheet" ? `R#${r.r_number} is already with you` : `R#${r.r_number} is already with another courier`);
+      if (!added && !existing) await api.closeDeliverySheet(sheetId).catch(() => {}); // nothing picked up: don't leave an empty sheet
+      toast([added ? `${added} report${added === 1 ? "" : "s"} for ${place} picked up.` : "Nothing was picked up.", ...problems].join(" "), problems.length && !added ? "err" : "ok");
+      onDone();
+    } catch (e: any) { setErr(e.message); } finally { setBusy(null); }
+  }
 
   return (
-    <section className="mb-5">
-      <h2 className="text-lg font-semibold text-ink">Ready for delivery</h2>
-      <p className="text-sm text-ink-2 mb-3">
-        {!waiting.length ? "Nothing is ready yet. This list updates by itself."
-          : `${waiting.length} report${waiting.length === 1 ? "" : "s"} at the lab${mySites.size ? `, ${mineCount} on your routes` : ""}.`}
-      </p>
-      <div className="space-y-3">
-        {groups.map((g) => {
-          const isChosen = key(chosen) === key(g.dest);
-          return (
-            <div key={g.dest} className="card overflow-hidden" style={isChosen ? { borderColor: C.accent, borderWidth: 2 } : undefined}>
-              <div className="px-4 py-3 flex items-center justify-between gap-3 border-b" style={{ borderColor: C.line, background: isChosen ? tint(C.accent, 10) : C.raised }}>
-                <span className="min-w-0">
-                  <span className="block text-lg font-semibold text-ink">{g.dest}</span>
-                  <span className="block text-sm text-ink-2">{g.items.length} report{g.items.length === 1 ? "" : "s"}</span>
-                </span>
-                {g.mine && <Badge color={C.success}>Your route</Badge>}
-              </div>
-              <ul className="px-4 py-2">
-                {g.items.map((w) => (
-                  <li key={w.id} className="py-1 flex gap-3 items-baseline">
-                    <span className="num text-base text-ink font-semibold">R#{w.r_number}</span>
-                    <span className="text-sm text-ink-2 truncate">{w.client_name || ""}</span>
-                  </li>
-                ))}
-              </ul>
-              <div className="px-4 pb-3">
-                <Button tone={isChosen ? "primary" : "ghost"} className="w-full py-2.5" onClick={() => onChoose(g.dest)} aria-pressed={isChosen}>
-                  {isChosen ? `Delivering to ${g.dest}: sign below` : `Deliver here`}
-                </Button>
-              </div>
-            </div>
-          );
-        })}
+    <div className="max-w-lg mx-auto px-4 py-5">
+      <button className="text-accent underline text-sm mb-3 cursor-pointer" onClick={onBack}>‹ All centres</button>
+      <p className="text-sm text-ink-3">Pick up reports for</p>
+      <h1 className="text-2xl font-semibold text-ink mb-3">{place}</h1>
+      {err && <Note tone="err">{err}</Note>}
+
+      <div className="card overflow-hidden mb-4">
+        <div className="flex items-center justify-between px-4 py-2.5 border-b" style={{ borderColor: C.line, background: C.raised }}>
+          <span className="text-sm text-ink-2">Untick any report you don't have in hand.</span>
+          {ready.length > 1 && <button className="text-sm text-accent underline cursor-pointer" onClick={() => {
+            const all = ready.every((w) => picked[w.r_number]); setPicked(Object.fromEntries(ready.map((w) => [w.r_number, !all])));
+          }}>{ready.every((w) => picked[w.r_number]) ? "Untick all" : "Tick all"}</button>}
+        </div>
+        <ul>
+          {ready.map((w) => (
+            <li key={w.id}>
+              <label className="flex items-center gap-3 px-4 py-3 cursor-pointer border-b" style={{ borderColor: C.line }}>
+                <input type="checkbox" className="w-7 h-7 accent-[var(--accent)]" checked={!!picked[w.r_number]} onChange={(e) => setPicked({ ...picked, [w.r_number]: e.target.checked })} />
+                <span className="min-w-0"><span className="num text-lg text-ink">R#{w.r_number}</span>
+                  {w.client_name && <span className="block text-sm text-ink-2">{w.client_name}</span>}</span>
+              </label>
+            </li>
+          ))}
+          {extra.map((r) => (
+            <li key={r} className="flex items-center gap-3 px-4 py-3 border-b" style={{ borderColor: C.line }}>
+              <span className="num text-lg text-ink flex-1">R#{r.replace(/\D/g, "") || r}</span>
+              <Badge color={C.warning}>Added by you</Badge>
+              <button className="text-sm text-accent underline cursor-pointer" onClick={() => setExtra(extra.filter((x) => x !== r))}>Remove</button>
+            </li>
+          ))}
+          {!ready.length && !extra.length && <li className="px-4 py-4 text-ink-3">No reports released for {place} right now. If you have one in hand, add it below.</li>}
+        </ul>
       </div>
-    </section>
+
+      <details className="mb-5">
+        <summary className="text-sm text-accent underline cursor-pointer">Have a report that isn't in the list?</summary>
+        <div className="mt-3">
+          <input ref={fileRef} type="file" accept="image/*" capture="environment" className="sr-only" id="pickup-photo" onChange={(e) => onPhoto(e.target.files?.[0])} />
+          <label htmlFor="pickup-photo" className="flex items-center justify-center w-full rounded-lg py-3 font-semibold cursor-pointer mb-2 border-2" style={{ borderColor: C.accent, color: C.accent }}>Scan its barcode (photo)</label>
+          <div className="flex gap-2">
+            <input className={inputCls} inputMode="numeric" placeholder="Or type the R#" value={code} onChange={(e) => setCode(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") addCode(code); }} />
+            <Button disabled={!code.trim()} onClick={() => addCode(code)}>Add</Button>
+          </div>
+          <p className="text-xs text-ink-3 mt-1">Only reports released by post-analytical can be taken.</p>
+        </div>
+      </details>
+
+      {existing ? (
+        <p className="text-sm text-ink-2 mb-4">You already signed for reports for {place} at {fmtTime(existing.started_at)}. These will be added to the same sheet.</p>
+      ) : (
+        <div className="mb-4"><SignaturePad label="Your signature" onChange={setSig} /></div>
+      )}
+      <Button tone="primary" className="w-full py-4 text-lg" disabled={!!busy || !chosen.length} onClick={confirm}>
+        {busy || `Take ${chosen.length} report${chosen.length === 1 ? "" : "s"} for ${place}`}
+      </Button>
+    </div>
   );
 }
 
-function RecordDelivery({ row, onCancel, onSaved, toast }: {
-  row: api.ReportDelivery; onCancel: () => void; onSaved: () => void; toast: (m: string, t?: "ok" | "err") => void;
+/* ---------------- Deliver at the centre ---------------- */
+const NOT_DELIVERED: { v: "ND" | "CU" | "C"; label: string }[] = [
+  { v: "CU", label: "Client unavailable" }, { v: "C", label: "Centre closed" }, { v: "ND", label: "Other reason" },
+];
+
+function Deliver({ sheet, rows, onBack, onFinished, reload, toast }: {
+  sheet: api.DeliverySheet; rows: api.ReportDelivery[]; onBack: () => void; onFinished: () => void; reload: () => Promise<void>;
+  toast: (m: string, t?: "ok" | "err") => void;
 }) {
-  const [status, setStatus] = useState<"D" | "ND" | "CU" | "C">("D");
+  const pending = rows.filter((r) => r.status === "pending");
+  const done = rows.filter((r) => r.status !== "pending");
+  const [given, setGiven] = useState<Record<number, boolean>>(() => Object.fromEntries(pending.map((r) => [r.id, true])));
   const [name, setName] = useState("");
   const [sig, setSig] = useState("");
-  const [reason, setReason] = useState("");
+  const [why, setWhy] = useState<"ND" | "CU" | "C" | "">("");
+  const [whyText, setWhyText] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
+  const handed = pending.filter((r) => given[r.id]);
+  const back = pending.filter((r) => !given[r.id]);
+
   async function save() {
-    if (status === "D" && (!name.trim() || !sig)) return setErr("Ask the receiver to type their name and sign.");
-    if (status !== "D" && !reason.trim()) return setErr("Give the reason it wasn't delivered.");
+    if (!pending.length) {
+      setBusy(true);
+      try { await api.closeDeliverySheet(sheet.id); toast("The sheet has been sent to the lab."); onFinished(); }
+      catch (e: any) { setErr(e.message); } finally { setBusy(false); }
+      return;
+    }
+    if (handed.length && (!name.trim() || !sig)) return setErr("Ask the person receiving the reports to type their name and sign.");
+    if (back.length && !why) return setErr(`Say why ${back.length === 1 ? "this report wasn't" : "these reports weren't"} handed over.`);
+    if (back.length && why === "ND" && !whyText.trim()) return setErr("Type the reason.");
     setBusy(true); setErr(null);
-    try { await api.recordDelivery(row.id, status, name, sig, reason); toast(status === "D" ? "Delivery recorded." : "Recorded as not delivered."); onSaved(); }
-    catch (e: any) { setErr(e.message); } finally { setBusy(false); }
+    try {
+      for (const r of handed) await api.recordDelivery(r.id, "D", name, sig, "");
+      const reasonText = why === "ND" ? whyText.trim() : `${NOT_DELIVERED.find((x) => x.v === why)?.label}${whyText.trim() ? `: ${whyText.trim()}` : ""}`;
+      for (const r of back) await api.recordDelivery(r.id, why as "ND" | "CU" | "C", "", "", reasonText);
+      await api.closeDeliverySheet(sheet.id);
+      toast(`${handed.length} delivered${back.length ? `, ${back.length} to bring back to the lab` : ""}. The sheet has been sent to the lab.`);
+      onFinished();
+    } catch (e: any) { setErr(e.message); await reload(); } finally { setBusy(false); }
   }
 
-  const options: { v: typeof status; label: string }[] = [
-    { v: "D", label: "Delivered" }, { v: "ND", label: "Not delivered" }, { v: "CU", label: "Client unavailable" }, { v: "C", label: "Closed" },
-  ];
   return (
     <div className="max-w-lg mx-auto px-4 py-5">
-      <button className="text-accent underline text-sm mb-3 cursor-pointer" onClick={onCancel}>Back to sheet</button>
-      <h1 className="num text-2xl font-semibold text-ink">R#{row.r_number}</h1>
-      <p className="text-ink-2 mb-4">{row.client_name || "Client not set"}</p>
+      <button className="text-accent underline text-sm mb-3 cursor-pointer" onClick={onBack}>‹ All centres</button>
+      <p className="text-sm text-ink-3">Hand over at</p>
+      <h1 className="text-2xl font-semibold text-ink mb-3">{sheet.location}</h1>
       {err && <Note tone="err">{err}</Note>}
-      <div className="grid grid-cols-2 gap-2 mb-5" role="radiogroup" aria-label="Status">
-        {options.map((o) => (
-          <button key={o.v} role="radio" aria-checked={status === o.v} onClick={() => setStatus(o.v)}
-            className="rounded-lg border-2 py-3 px-2 text-base cursor-pointer"
-            style={{ borderColor: status === o.v ? C.accent : C.line, background: status === o.v ? "color-mix(in srgb, var(--accent) 10%, transparent)" : C.surface, color: C.ink, fontWeight: status === o.v ? 600 : 400 }}>
-            {o.label} <span className="text-ink-3">({o.v})</span>
-          </button>
-        ))}
+
+      <div className="card overflow-hidden mb-4">
+        <div className="px-4 py-2.5 border-b text-sm text-ink-2" style={{ borderColor: C.line, background: C.raised }}>
+          Untick any report you could <b>not</b> hand over.
+        </div>
+        <ul>
+          {pending.map((r) => (
+            <li key={r.id}>
+              <label className="flex items-center gap-3 px-4 py-3 cursor-pointer border-b" style={{ borderColor: C.line }}>
+                <input type="checkbox" className="w-7 h-7 accent-[var(--accent)]" checked={!!given[r.id]} onChange={(e) => setGiven({ ...given, [r.id]: e.target.checked })} />
+                <span className="min-w-0 flex-1"><span className="num text-lg text-ink">R#{r.r_number}</span>
+                  {r.client_name && <span className="block text-sm text-ink-2">{r.client_name}</span>}</span>
+                {!given[r.id] && <Badge color={C.warning}>Not handed over</Badge>}
+              </label>
+            </li>
+          ))}
+          {done.map((r) => (
+            <li key={r.id} className="flex items-center gap-3 px-4 py-3 border-b text-ink-3" style={{ borderColor: C.line }}>
+              <span className="num flex-1">R#{r.r_number}</span>
+              <Badge color={r.status === "D" ? C.success : C.warning}>{r.status === "D" ? "Delivered" : "Not delivered"}</Badge>
+            </li>
+          ))}
+        </ul>
       </div>
-      {status === "D" ? (
-        <>
-          <Field label="Receiver's full name"><input className={inputCls} autoComplete="off" value={name} onChange={(e) => setName(e.target.value)} /></Field>
-          <div className="mb-5"><SignaturePad label="Receiver's signature" onChange={setSig} /></div>
-        </>
-      ) : (
-        <Field label="Reason not delivered"><textarea className={`${inputCls} h-24`} value={reason} onChange={(e) => setReason(e.target.value)} placeholder="e.g. Reception closed; will return at 2 pm" /></Field>
+
+      {handed.length > 0 && (
+        <section className="mb-5">
+          <h2 className="font-semibold text-ink mb-2">Person receiving {handed.length} report{handed.length === 1 ? "" : "s"}</h2>
+          <Field label="Their full name"><input className={inputCls} autoComplete="off" value={name} onChange={(e) => setName(e.target.value)} /></Field>
+          <SignaturePad label="Their signature" onChange={setSig} />
+        </section>
       )}
-      <Button tone="primary" className="w-full py-3.5 text-lg" disabled={busy} onClick={save}>{busy ? "Saving…" : "Save"}</Button>
-      <p className="text-xs text-ink-3 mt-3">The date and time are recorded automatically when you save.</p>
+
+      {back.length > 0 && (
+        <section className="mb-5">
+          <h2 className="font-semibold text-ink mb-2">Why {back.length === 1 ? "wasn't 1 report" : `weren't ${back.length} reports`} handed over?</h2>
+          <div className="grid grid-cols-3 gap-2 mb-3" role="radiogroup" aria-label="Reason">
+            {NOT_DELIVERED.map((o) => (
+              <button key={o.v} role="radio" aria-checked={why === o.v} onClick={() => setWhy(o.v)} className="rounded-lg border-2 py-3 px-1 text-sm cursor-pointer"
+                style={{ borderColor: why === o.v ? C.accent : C.line, background: why === o.v ? tint(C.accent, 10) : C.surface, color: C.ink, fontWeight: why === o.v ? 600 : 400 }}>
+                {o.label}
+              </button>
+            ))}
+          </div>
+          {why && <input className={inputCls} value={whyText} onChange={(e) => setWhyText(e.target.value)} placeholder={why === "ND" ? "Type the reason" : "Add a note (optional)"} />}
+          <p className="text-xs text-ink-3 mt-1">Bring {back.length === 1 ? "it" : "them"} back to post-analytical.</p>
+        </section>
+      )}
+
+      <Button tone="primary" className="w-full py-4 text-lg" disabled={busy} onClick={save}>
+        {busy ? "Saving…" : !pending.length ? "Send the sheet to the lab" : handed.length && back.length ? `Confirm: ${handed.length} delivered, ${back.length} not` : handed.length ? `Confirm ${handed.length} delivered` : `Confirm none delivered`}
+      </Button>
+      <p className="text-xs text-ink-3 mt-3">The date and time are recorded automatically. The delivery sheet is then sent to the lab.</p>
     </div>
   );
 }
