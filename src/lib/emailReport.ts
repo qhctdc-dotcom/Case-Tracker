@@ -33,6 +33,7 @@ export interface ReportGroup { key: string; label: string; isEmail: boolean; fir
 export interface ParsedReport {
   source: "digital" | "scan" | "text";
   screen?: boolean;                 // read from Meditech screen captures
+  pictures?: boolean;               // uploaded as picture files (one per page)
   groups: ReportGroup[];            // each account heading (or unheaded block) in the order found
   partialSkipped?: number;          // half-visible lines at the edge of screen captures (not read)
   overlapMerged?: number;           // rows that appeared on two overlapping captures (counted once)
@@ -69,7 +70,37 @@ async function pdfTextLines(doc: pdfjs.PDFDocumentProxy): Promise<Line[]> {
 }
 
 /* ---------------- scanned PDF: OCR each page ---------------- */
-async function ocrLines(doc: pdfjs.PDFDocumentProxy, onProgress: (msg: string, pct: number) => void) {
+type PageSource = { count: number; label: string; get: (p: number) => Promise<{ canvas: HTMLCanvasElement; rect: { x: number; y: number; w: number; h: number } }> };
+
+/** Pages of a PDF, rendered at about 300 dpi. */
+function pdfPages(doc: pdfjs.PDFDocumentProxy): PageSource {
+  return { count: doc.numPages, label: "page", get: async (p) => {
+    const page = await doc.getPage(p);
+    const vp = page.getViewport({ scale: 300 / 72 });
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.ceil(vp.width); canvas.height = Math.ceil(vp.height);
+    await page.render({ canvasContext: canvas.getContext("2d")!, viewport: vp }).promise;
+    const rect = (await imageRect(page, vp, pdfjs)) || { x: 0, y: 0, w: canvas.width, h: canvas.height };
+    return { canvas, rect };
+  } };
+}
+
+/** Picture files (PNG, JPG): one page each, enlarged so small screenshots read as well as a 300 dpi page. */
+function imagePages(files: File[]): PageSource {
+  return { count: files.length, label: "picture", get: async (p) => {
+    const bmp = await createImageBitmap(files[p - 1]!);
+    const scale = Math.max(1, Math.min(4, 3200 / bmp.width));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(bmp.width * scale); canvas.height = Math.round(bmp.height * scale);
+    const ctx = canvas.getContext("2d")!;
+    ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.imageSmoothingQuality = "high"; ctx.drawImage(bmp, 0, 0, canvas.width, canvas.height);
+    bmp.close?.();
+    return { canvas, rect: { x: 0, y: 0, w: canvas.width, h: canvas.height } };
+  } };
+}
+
+async function ocrLines(src: PageSource, onProgress: (msg: string, pct: number) => void) {
   const { createWorker } = await import("tesseract.js");
   const base = `${window.location.origin}/ocr`;
   const worker = await createWorker("eng", 1, {
@@ -80,16 +111,11 @@ async function ocrLines(doc: pdfjs.PDFDocumentProxy, onProgress: (msg: string, p
   const pageCanvases: HTMLCanvasElement[] = [];
   let screenPages = 0, partial = 0;
   try {
-    for (let p = 1; p <= doc.numPages; p++) {
-      onProgress(`Reading page ${p} of ${doc.numPages}…`, Math.round(((p - 1) / doc.numPages) * 100));
-      const page = await doc.getPage(p);
-      const vp = page.getViewport({ scale: 300 / 72 }); // about 300 dpi
-      const canvas = document.createElement("canvas");
-      canvas.width = Math.ceil(vp.width); canvas.height = Math.ceil(vp.height);
-      await page.render({ canvasContext: canvas.getContext("2d")!, viewport: vp }).promise;
+    for (let p = 1; p <= src.count; p++) {
+      onProgress(`Reading ${src.label} ${p} of ${src.count}…`, Math.round(((p - 1) / src.count) * 100));
+      const { canvas, rect } = await src.get(p);
       pageCanvases[p] = canvas;
       // Meditech screen captures: read the number columns with the screen-font reader
-      const rect = (await imageRect(page, vp, pdfjs)) || { x: 0, y: 0, w: canvas.width, h: canvas.height };
       const sp = readScreen(toGray(canvas, rect), rect);
       if (sp.isScreen) { screenPages++; partial += sp.partial; }
       const { data } = await worker.recognize(canvas, {}, { blocks: true });
@@ -239,7 +265,23 @@ export function parseLines(lines: Line[], source: ParsedReport["source"], canvas
 }
 
 /** Reads an uploaded file: digital PDF, scanned PDF or a text file. */
-export async function readReport(file: File, onProgress: (msg: string, pct: number) => void): Promise<ParsedReport> {
+const isImage = (f: File) => f.type.startsWith("image/") || /\.(png|jpe?g|bmp|gif|webp)$/i.test(f.name);
+
+/** Reads one or more picture files (screen captures or photos), in name order, as one report. */
+export async function readImages(files: File[], onProgress: (msg: string, pct: number) => void): Promise<ParsedReport> {
+  const sorted = [...files].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+  const { lines, pageCanvases, screenPages, partial } = await ocrLines(imagePages(sorted), onProgress);
+  const report = parseLines(lines, "scan", pageCanvases, screenPages > 0);
+  report.pictures = true;
+  if (screenPages) report.partialSkipped = partial;
+  return report;
+}
+
+export async function readReport(fileOrFiles: File | File[], onProgress: (msg: string, pct: number) => void): Promise<ParsedReport> {
+  const files = Array.isArray(fileOrFiles) ? fileOrFiles : [fileOrFiles];
+  if (files.every(isImage)) return readImages(files, onProgress);
+  if (files.length > 1) throw new Error("Choose one PDF or text file, or several pictures (PNG/JPG), not a mix");
+  const file = files[0]!;
   if (/\.txt$/i.test(file.name) || file.type.startsWith("text/")) {
     const text = await file.text();
     let page = 1;
@@ -251,7 +293,7 @@ export async function readReport(file: File, onProgress: (msg: string, pct: numb
   const textLines = await pdfTextLines(doc);
   const chars = textLines.reduce((n, l) => n + l.text.length, 0);
   if (chars > 200 * doc.numPages * 0.25) return parseLines(textLines, "digital"); // has real text
-  const { lines, pageCanvases, screenPages, partial } = await ocrLines(doc, onProgress);
+  const { lines, pageCanvases, screenPages, partial } = await ocrLines(pdfPages(doc), onProgress);
   const report = parseLines(lines, "scan", pageCanvases, screenPages > 0);
   if (screenPages) report.partialSkipped = partial;
   if (!report.runDate) {

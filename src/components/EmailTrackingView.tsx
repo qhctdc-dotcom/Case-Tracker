@@ -53,12 +53,14 @@ export default function EmailTrackingView({ toast, isAdmin }: { toast: (m: strin
   useEffect(() => { setSel({}); }, [tab]);
 
   /* ---------- upload ---------- */
-  async function onFile(file?: File) {
+  async function onFile(list?: FileList | null) {
+    const files = list ? Array.from(list) : [];
     if (fileRef.current) fileRef.current.value = "";
-    if (!file) return;
+    if (!files.length) return;
+    const file = files.length === 1 ? files[0]! : { name: `${files.length} pictures (${files.map((f) => f.name).sort((a, b) => a.localeCompare(b, undefined, { numeric: true })).join(", ")})` } as File;
     setReading({ msg: "Opening the file…", pct: 0 });
     try {
-      const r = await readReport(file, (msg, pct) => setReading({ msg, pct }));
+      const r = await readReport(files, (msg, pct) => setReading({ msg, pct }));
       if (!r.rows.length && !r.unreadable.length) {
         toast(`No requisition rows found in "${file.name}". Check it is the Meditech report or the Patient Entry List.`, "err");
         return;
@@ -168,11 +170,11 @@ export default function EmailTrackingView({ toast, isAdmin }: { toast: (m: strin
       <div className="flex items-start justify-between gap-4 flex-wrap mb-5">
         <div>
           <h1 className="text-xl font-semibold text-ink">Email tracking</h1>
-          <p className="text-sm text-ink-2">{EMAIL_ACCOUNT_LABEL}. Upload each day's Meditech report: a scanned printout, a Meditech file, or Patient Entry List screen captures.</p>
+          <p className="text-sm text-ink-2">{EMAIL_ACCOUNT_LABEL}. Upload each day's Meditech report: a scanned printout, a Meditech file, or Patient Entry List screen captures (PDF or pictures; choose several pictures at once).</p>
           {latest && <p className="text-sm text-ink-3 mt-0.5">Last upload: {latest.file_name} ({latest.run_date ? `run ${latest.run_date}, ` : ""}{fmtIso(latest.uploaded_at)} by {latest.uploaded_by.split("@")[0]}). <button className="text-accent underline cursor-pointer" onClick={undoUpload}>Undo it</button></p>}
         </div>
         <div>
-          <input ref={fileRef} type="file" accept=".pdf,.txt,application/pdf,text/plain" className="sr-only" id="email-upload" onChange={(e) => onFile(e.target.files?.[0])} />
+          <input ref={fileRef} type="file" accept=".pdf,.txt,.png,.jpg,.jpeg,application/pdf,text/plain,image/*" multiple className="sr-only" id="email-upload" onChange={(e) => onFile(e.target.files)} />
           <label htmlFor="email-upload" className="inline-flex items-center rounded-md px-4 py-2 text-base font-semibold cursor-pointer bg-accent text-accent-ink">Upload today's report</label>
         </div>
       </div>
@@ -276,7 +278,7 @@ export default function EmailTrackingView({ toast, isAdmin }: { toast: (m: strin
           <>
             <p className="text-sm text-ink-2 mb-3">
               <b>{report.fileName}</b>: {report.screen ? "Meditech screen captures" : report.source === "scan" ? "scanned printout (read by OCR)" : "Meditech file"}
-              {report.runDate ? `, ${report.screen ? "list for" : "report run"} ${report.runDate}` : ""}, {report.pages} page{report.pages === 1 ? "" : "s"}.
+              {report.runDate ? `, ${report.screen ? "list for" : "report run"} ${report.runDate}` : ""}, {report.pages} {report.pictures ? "picture" : "page"}{report.pages === 1 ? "" : "s"}.
               {" "}{finalRows.length} requisition{finalRows.length === 1 ? "" : "s"} will be uploaded.
               {!!report.overlapMerged && <> {report.overlapMerged} shown twice on overlapping captures were counted once.</>}
               {!!report.partialSkipped && <> {report.partialSkipped} half-visible line{report.partialSkipped === 1 ? " was" : "s were"} skipped at the edges of captures (each is normally shown in full on the next capture).</>}
@@ -292,7 +294,7 @@ export default function EmailTrackingView({ toast, isAdmin }: { toast: (m: strin
                   <li key={g.key}>
                     <label className="flex items-center gap-2 text-sm text-ink cursor-pointer">
                       <input type="checkbox" className="w-4 h-4" checked={!!groupsOn[g.key]} onChange={(e) => setGroupsOn({ ...groupsOn, [g.key]: e.target.checked })} />
-                      <span><b>{g.label}</b>{g.isEmail && <Badge color={C.accent}>EMAIL</Badge>} <span className="text-ink-3">{g.rows} row{g.rows === 1 ? "" : "s"}, page{g.firstPage === g.lastPage ? ` ${g.firstPage}` : `s ${g.firstPage}–${g.lastPage}`}</span></span>
+                      <span><b>{g.label}</b>{g.isEmail && <Badge color={C.accent}>EMAIL</Badge>} <span className="text-ink-3">{g.rows} row{g.rows === 1 ? "" : "s"}, {report.pictures ? "picture" : "page"}{g.firstPage === g.lastPage ? ` ${g.firstPage}` : `s ${g.firstPage}–${g.lastPage}`}</span></span>
                     </label>
                   </li>
                 ))}
