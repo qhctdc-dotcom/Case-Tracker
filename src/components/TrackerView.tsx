@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import * as api from "../lib/api";
 import {
-  fmtIso, fmtTime, formatMinutes, norm, rangeText, tatMs, verdict,
+  REPORT_DEPT_ORDER, fmtIso, fmtTime, formatMinutes, norm, rangeText, tatMs, verdict,
   type Slice, type SliceDept, type TrackedTest,
 } from "../lib/tracker";
 import { Badge, Button, C, Cap, DEPT_COLORS, Stat, csvCell, downloadFile, inputBase, inputCls, stamp, tint } from "./ui";
@@ -78,6 +78,9 @@ export default function TrackerView({ slices, now, lastPaste, onOpenPaste }: {
   const [sort, setSort] = useState<SortMode>("priority");
   const [search, setSearch] = useState("");
   const [openId, setOpenId] = useState<string | null>(null);
+  const [arrange, setArrangeState] = useState<"dept" | "due">(() =>
+    (typeof localStorage !== "undefined" && localStorage.getItem("tracker.arrange") === "due") ? "due" : "dept");
+  const setArrange = (v: "dept" | "due") => { setArrangeState(v); try { localStorage.setItem("tracker.arrange", v); } catch { /* ignore */ } };
 
   const open = slices.filter((c) => c.status !== "Completed");
   const depts: SliceDept[] = ["Hematology", "Microbiology", "Chemistry", "Immunology",
@@ -106,6 +109,13 @@ export default function TrackerView({ slices, now, lastPaste, onOpenPaste }: {
     .map((g) => ({ g, rows: visible.filter((c) => groupOf(c, now) === g) }))
     .filter((x) => x.rows.length);
 
+  // Arrange by department: one section per department, overdue first inside each.
+  const rank: Record<Group, number> = { overdue: 0, soon: 1, later: 2, done: 3 };
+  const deptGroups = REPORT_DEPT_ORDER
+    .map((d) => ({ d, rows: visible.filter((c) => c.department === d)
+      .sort((a, b) => rank[groupOf(a, now)] - rank[groupOf(b, now)]) }))
+    .filter((x) => x.rows.length);
+
   const selected = openId ? slices.find((c) => c.id === openId) || null : null;
   const overdue = open.filter((c) => now > tatMs(c)).length;
   const soon = open.filter((c) => groupOf(c, now) === "soon").length;
@@ -113,7 +123,7 @@ export default function TrackerView({ slices, now, lastPaste, onOpenPaste }: {
 
   function exportCsv() {
     const rows = [["R#", "Client", "A-List", "Department", "Pending tests", "Tests done", "TAT", "Status", "Completed (detected)", "Last seen pending"].join(",")];
-    visible.forEach((c) => {
+    (arrange === "dept" ? deptGroups.flatMap((x) => x.rows) : visible).forEach((c) => {
       const pend = c.tests.filter((t) => t.status !== "Completed").map((t) => t.name).join(", ");
       const done = c.tests.filter((t) => t.status === "Completed").map((t) => t.name).join(", ");
       rows.push([c.patientId, csvCell(c.clientDisplay), c.isAlist ? "A-List" : "", c.department, csvCell(pend), csvCell(done),
@@ -175,6 +185,13 @@ export default function TrackerView({ slices, now, lastPaste, onOpenPaste }: {
           <option value="r">By R# number</option>
           <option value="client">By client</option>
         </select>
+        <div className="flex rounded-lg border overflow-hidden text-sm" role="group" aria-label="Arrange by" style={{ borderColor: C.line }}>
+          {([["dept", "By department"], ["due", "By due time"]] as const).map(([v, label]) => (
+            <button key={v} onClick={() => setArrange(v)} aria-pressed={arrange === v}
+              className="px-3 py-1.5 cursor-pointer"
+              style={{ background: arrange === v ? C.ink : C.surface, color: arrange === v ? C.surface : C.ink }}>{label}</button>
+          ))}
+        </div>
         <label className="flex items-center gap-2 text-sm text-ink-2 cursor-pointer px-1">
           <input type="checkbox" checked={alistOnly} onChange={(e) => setAlistOnly(e.target.checked)} className="w-4 h-4 accent-[var(--alist)]" />
           A-List only
@@ -188,23 +205,59 @@ export default function TrackerView({ slices, now, lastPaste, onOpenPaste }: {
           <p className="text-ink-2 mb-4">{slices.length ? "No cases match these filters." : "Nothing is being tracked yet. Paste the MT outstanding list to start."}</p>
           {!slices.length && <Button tone="primary" onClick={onOpenPaste}>Paste MT list</Button>}
         </div>
-      ) : groups.map(({ g, rows }) => (
+      ) : arrange === "dept" ? deptGroups.map(({ d, rows }) => {
+        const out = rows.filter((c) => c.status !== "Completed");
+        const late = out.filter((c) => now > tatMs(c)).length;
+        const alist = out.filter((c) => c.isAlist).length;
+        return (
+          <section key={d} className="mb-6" aria-label={d}>
+            <h2 className="flex items-center gap-2 mb-2 text-base font-semibold text-ink flex-wrap">
+              <Cap dept={d} size={14} /> {d}
+              <span className="num text-sm font-normal text-ink-3">{rows.length}</span>
+              <span className="flex gap-1.5 ml-1 font-normal">
+                {late > 0 && <Badge color={C.danger}>{late} overdue</Badge>}
+                {alist > 0 && <Badge color={C.alist}>{alist} A-List</Badge>}
+              </span>
+            </h2>
+            <Worklist rows={rows} now={now} lead="Due" onOpen={setOpenId} accent={DEPT_COLORS[d]} />
+          </section>
+        );
+      }) : groups.map(({ g, rows }) => (
         <section key={g} className="mb-6" aria-label={GROUP_LABEL[g]}>
           <h2 className="flex items-baseline gap-2 mb-2 text-base font-semibold" style={{ color: g === "overdue" ? C.danger : g === "soon" ? C.warning : C.ink }}>
             {GROUP_LABEL[g]} <span className="num text-sm font-normal text-ink-3">{rows.length}</span>
           </h2>
-          <div className="card overflow-hidden">
+          <Worklist rows={rows} now={now} lead="Department" onOpen={setOpenId} />
+        </section>
+      ))}
+      <p className="text-xs text-ink-3">Showing {visible.length} of {slices.length} department entries.</p>
+
+      <CaseDrawer c={selected} siblings={selected ? slices.filter((s) => s.rNumber === selected.rNumber && s.id !== selected.id) : []}
+        now={now} onClose={() => setOpenId(null)} onSelect={setOpenId} />
+    </div>
+  );
+}
+
+/** The worklist table. `lead` picks the first column: the department, or the due-time group when already split by department. */
+function Worklist({ rows, now, lead, onOpen, accent }: {
+  rows: Slice[]; now: number; lead: "Department" | "Due"; onOpen: (id: string) => void; accent?: string;
+}) {
+  return (
+          <div className="card overflow-hidden" style={accent ? { borderTop: `3px solid ${accent}` } : undefined}>
             <div className="hidden md:grid grid-cols-[9rem_minmax(12rem,1.3fr)_minmax(10rem,2fr)_12rem] gap-4 px-4 py-2 text-xs text-ink-3 border-b" style={{ borderColor: C.line, background: C.raised }}>
-              <span>Department</span><span>Requisition</span><span>Tests</span><span>TAT</span>
+              <span>{lead}</span><span>Requisition</span><span>Tests</span><span>TAT</span>
             </div>
             {rows.map((c) => {
               const st = statusText(c, now);
+              const g = groupOf(c, now);
               return (
-                <button key={c.id} onClick={() => setOpenId(c.id)}
+                <button key={c.id} onClick={() => onOpen(c.id)}
                   className="w-full text-left grid md:grid-cols-[9rem_minmax(12rem,1.3fr)_minmax(10rem,2fr)_12rem] gap-x-4 gap-y-2 px-4 border-b last:border-b-0 hover:bg-raised cursor-pointer"
                   style={{ borderColor: C.line, paddingTop: "var(--row-y)", paddingBottom: "var(--row-y)",
                     boxShadow: g === "overdue" ? `inset 4px 0 0 ${C.danger}` : undefined }}>
-                  <span className="flex items-center gap-2 text-sm text-ink-2"><Cap dept={c.department} /> {c.department}</span>
+                  {lead === "Department"
+                    ? <span className="flex items-center gap-2 text-sm text-ink-2"><Cap dept={c.department} /> {c.department}</span>
+                    : <span className="text-sm font-medium self-center" style={{ color: g === "overdue" ? C.danger : g === "soon" ? C.warning : g === "done" ? C.success : C.ink2 }}>{GROUP_LABEL[g]}</span>}
                   <span className="min-w-0">
                     <span className="flex items-center gap-2">
                       <span className="num font-semibold text-ink">{c.patientId}</span>
@@ -222,13 +275,6 @@ export default function TrackerView({ slices, now, lastPaste, onOpenPaste }: {
               );
             })}
           </div>
-        </section>
-      ))}
-      <p className="text-xs text-ink-3">Showing {visible.length} of {slices.length} department entries.</p>
-
-      <CaseDrawer c={selected} siblings={selected ? slices.filter((s) => s.rNumber === selected.rNumber && s.id !== selected.id) : []}
-        now={now} onClose={() => setOpenId(null)} onSelect={setOpenId} />
-    </div>
   );
 }
 
