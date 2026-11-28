@@ -581,3 +581,59 @@ export async function loadAnalytics(fromIso: string, toIso: string): Promise<Ana
   return { samples: samples.rows, runs: runs.rows, centres, audit, auditMissing, releases: rel.rows, deliveries: del.rows, sheets, names,
     transitAlertMinutes: settings.transitAlertMinutes, truncated: samples.truncated || rel.truncated || del.truncated };
 }
+
+/* ---------- delay reasons and follow-up (13_delay_notes.sql) ---------- */
+export type DelayStatus = "open" | "following_up" | "resolved";
+export interface DelayNote {
+  id: number; r_number: string; department: string; patient_id: string | null; client: string | null; is_alist: boolean;
+  tests: string | null; tat_at: string | null; reason_category: string; reason: string; delay_minutes: number; expected_at: string | null;
+  status: DelayStatus; recorded_by: string; recorded_by_name: string | null; recorded_at: string;
+  updated_by: string | null; updated_by_name: string | null; updated_at: string;
+  follow_up_note: string | null; followed_up_by: string | null; followed_up_by_name: string | null; followed_up_at: string | null;
+  resolved_at: string | null; history: { at: string; by: string; action: string; category?: string; reason?: string; delay_minutes?: number; note?: string }[];
+}
+export const DELAY_REASONS = [
+  "Repeat / re-run of test", "Instrument breakdown or maintenance", "Reagent or consumable out of stock", "QC failure",
+  "Sample problem (haemolysed, clotted, insufficient)", "Sample received late", "Awaiting confirmatory or reflex test",
+  "Culture still incubating", "Sent to referral lab", "Awaiting pathologist / senior review", "LIS or IT problem",
+  "Staff shortage or high workload", "Power outage", "Other",
+];
+const delayErr = (e: Error) => /delay_notes|save_delay_note|follow_up_delay|schema cache/i.test(e.message)
+  ? new Error("Delay notes aren't set up yet. Ask an admin to run supabase/13_delay_notes.sql in the Supabase SQL Editor.") : e;
+
+/** Delay notes recorded since `fromIso` (all of them when omitted), newest first. */
+export async function loadDelayNotes(fromIso?: string): Promise<DelayNote[]> {
+  try {
+    const r = await pages<DelayNote>((a, b) => {
+      let q = client().from("delay_notes").select("*");
+      if (fromIso) q = q.gte("recorded_at", fromIso);
+      return q.order("recorded_at", { ascending: false }).range(a, b);
+    }, "Delay notes");
+    return r.rows;
+  } catch (e: any) { throw delayErr(e); }
+}
+export async function saveDelayNote(p: {
+  rNumber: string; department: string; patientId: string; client: string; isAlist: boolean; tests: string; tatAt: string | null;
+  category: string; reason: string; delayMinutes: number;
+}): Promise<number> {
+  try {
+    return await call(client().rpc("save_delay_note", {
+      p_r_number: p.rNumber, p_department: p.department, p_patient_id: p.patientId, p_client: p.client, p_is_alist: p.isAlist,
+      p_tests: p.tests, p_tat_at: p.tatAt, p_category: p.category, p_reason: p.reason, p_delay_minutes: p.delayMinutes,
+    }), "Saving delay reason") as number;
+  } catch (e: any) { throw delayErr(e); }
+}
+export async function followUpDelay(id: number, status: DelayStatus, note: string) {
+  try { await call(client().rpc("follow_up_delay", { p_id: id, p_status: status, p_note: note }), "Saving follow-up"); }
+  catch (e: any) { throw delayErr(e); }
+}
+export async function deleteDelayNote(id: number) {
+  try { await call(client().rpc("delete_delay_note", { p_id: id }), "Removing delay note"); }
+  catch (e: any) { throw delayErr(e); }
+}
+let delaySubs = 0;
+export function subscribeDelayNotes(onChange: () => void) {
+  const ch = client().channel(`delays-live-${++delaySubs}`)
+    .on("postgres_changes", { event: "*", schema: "public", table: "delay_notes" }, onChange).subscribe();
+  return () => { client().removeChannel(ch); };
+}

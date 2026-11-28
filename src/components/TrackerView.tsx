@@ -4,13 +4,44 @@ import {
   REPORT_DEPT_ORDER, fmtIso, fmtTime, formatMinutes, norm, rangeText, tatMs, verdict,
   type Slice, type SliceDept, type TrackedTest,
 } from "../lib/tracker";
-import { Badge, Button, C, Cap, DEPT_COLORS, Stat, csvCell, downloadFile, inputBase, inputCls, stamp, tint } from "./ui";
+import { Badge, Button, C, Cap, DEPT_COLORS, Stat, csvCell, downloadFile, inputBase, stamp, tint } from "./ui";
+import { DelayNoteModal, DelayStatusBadge, STATUS_LABEL, delayText, needsDelayReason } from "./DelayNote";
 
 type StatusFilter = "open" | "all" | "done";
 type SortMode = "priority" | "due" | "r" | "client";
 type Group = "overdue" | "soon" | "later" | "done";
 const GROUP_LABEL: Record<Group, string> = { overdue: "Overdue", soon: "Due within the hour", later: "Due later", done: "Completed" };
 const HOUR = 3600e3;
+
+type Cleared = Record<string, { at: string; overdue: boolean }>;
+const CLEARED_KEY = "tracker.cleared";
+function loadCleared(): Cleared {
+  try { return JSON.parse(localStorage.getItem(CLEARED_KEY) || "{}") || {}; } catch { return {}; }
+}
+function saveCleared(v: Cleared) {
+  try { localStorage.setItem(CLEARED_KEY, JSON.stringify(v)); } catch { /* storage full or blocked */ }
+}
+
+/** Today's date and a ticking clock, so staff can read TAT times against the real time. */
+function DateClock() {
+  const [t, setT] = useState(new Date());
+  useEffect(() => { const i = setInterval(() => setT(new Date()), 1000); return () => clearInterval(i); }, []);
+  return (
+    <div className="leading-tight" aria-live="off">
+      <div className="text-sm text-ink-2">{t.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}</div>
+      <div className="num text-2xl font-semibold text-ink">{t.toLocaleTimeString("en-GB", { hour12: false })}</div>
+    </div>
+  );
+}
+
+/** "27/11 14:05", with the year only when it isn't this year. */
+function shortStamp(iso: string | null | undefined) {
+  if (!iso) return "";
+  const d = new Date(iso); if (isNaN(d.getTime())) return "";
+  const p = (n: number) => String(n).padStart(2, "0");
+  const y = d.getFullYear() !== new Date().getFullYear() ? `/${d.getFullYear()}` : "";
+  return `${p(d.getDate())}/${p(d.getMonth() + 1)}${y} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
 
 function groupOf(c: Slice, now: number): Group {
   if (c.status === "Completed") return "done";
@@ -69,8 +100,9 @@ function TestChips({ tests, showDone }: { tests: TrackedTest[]; showDone: boolea
   );
 }
 
-export default function TrackerView({ slices, now, lastPaste, onOpenPaste }: {
+export default function TrackerView({ slices, now, lastPaste, onOpenPaste, toast }: {
   slices: Slice[]; now: number; lastPaste: { at: string; by_email: string } | null; onOpenPaste: () => void;
+  toast?: (text: string, tone?: "ok" | "err") => void;
 }) {
   const [dept, setDept] = useState<SliceDept | "all">("all");
   const [status, setStatus] = useState<StatusFilter>("open");
@@ -82,13 +114,66 @@ export default function TrackerView({ slices, now, lastPaste, onOpenPaste }: {
     (typeof localStorage !== "undefined" && localStorage.getItem("tracker.arrange") === "due") ? "due" : "dept");
   const setArrange = (v: "dept" | "due") => { setArrangeState(v); try { localStorage.setItem("tracker.arrange", v); } catch { /* ignore */ } };
 
+  // Delay reasons recorded by staff, keyed like slices ("R#__Department"). Shared with everyone, live.
+  const [notes, setNotes] = useState<Record<string, api.DelayNote>>({});
+  const [delayId, setDelayId] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    const load = () => api.loadDelayNotes(new Date(Date.now() - 180 * 86400e3).toISOString())
+      .then((rows) => { if (alive) setNotes(Object.fromEntries(rows.map((n) => [`${n.r_number}__${n.department}`, n]))); })
+      .catch(() => { /* not set up yet: saving explains what to run */ });
+    load();
+    let t: number | undefined; let unsub = () => {};
+    try { unsub = api.subscribeDelayNotes(() => { clearTimeout(t); t = window.setTimeout(load, 600); }); } catch { /* offline */ }
+    return () => { alive = false; unsub(); clearTimeout(t); };
+  }, []);
+
+  // Cases this person cleared from their own screen (kept in this browser only; nothing is deleted).
+  const [cleared, setClearedState] = useState<Cleared>(loadCleared);
+  const [showCleared, setShowCleared] = useState(false);
+  const [picking, setPicking] = useState(false);
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [undo, setUndo] = useState<{ ids: string[]; prev: Cleared } | null>(null);
+  const setCleared = (next: Cleared) => { setClearedState(next); saveCleared(next); };
+  // Forget entries for cases no longer in the tracker.
+  useEffect(() => {
+    if (!slices.length) return;
+    const ids = new Set(slices.map((c) => c.id));
+    const keep = Object.fromEntries(Object.entries(cleared).filter(([id]) => ids.has(id)));
+    if (Object.keys(keep).length !== Object.keys(cleared).length) setCleared(keep);
+  }, [slices]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const isHidden = (c: Slice) => {
+    const e = cleared[c.id];
+    if (!e) return false;
+    if (c.status !== "Completed") {
+      if (c.lastSeen && new Date(c.lastSeen).getTime() > new Date(e.at).getTime()) return false; // still pending in a newer MT paste
+      if (now > tatMs(c) && !e.overdue) return false; // went overdue after it was cleared
+    }
+    return true;
+  };
+  const hiddenIds = new Set(slices.filter(isHidden).map((c) => c.id));
+  const shown = showCleared ? slices : slices.filter((c) => !hiddenIds.has(c.id));
+
+  function clearIds(ids: string[]) {
+    if (!ids.length) return;
+    const at = new Date().toISOString();
+    const next = { ...cleared };
+    ids.forEach((id) => { const c = slices.find((s) => s.id === id); next[id] = { at, overdue: !!c && c.status !== "Completed" && now > tatMs(c) }; });
+    setUndo({ ids, prev: cleared });
+    setCleared(next); setPicked(new Set()); setPicking(false);
+  }
+  function restore(ids: string[]) {
+    const next = { ...cleared }; ids.forEach((id) => delete next[id]); setCleared(next);
+  }
+
   const open = slices.filter((c) => c.status !== "Completed");
   const depts: SliceDept[] = ["Hematology", "Microbiology", "Chemistry", "Immunology",
     ...(slices.some((c) => c.department === "Unclassified") ? ["Unclassified" as SliceDept] : [])];
 
   const visible = useMemo(() => {
     const q = norm(search);
-    const v = slices.filter((c) => {
+    const v = shown.filter((c) => {
       if (dept !== "all" && c.department !== dept) return false;
       if (status === "open" && c.status === "Completed") return false;
       if (status === "done" && c.status !== "Completed") return false;
@@ -103,7 +188,14 @@ export default function TrackerView({ slices, now, lastPaste, onOpenPaste }: {
       return tatMs(a) - tatMs(b);
     });
     return v;
-  }, [slices, dept, status, alistOnly, sort, search]);
+  }, [shown, dept, status, alistOnly, sort, search]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const sel: Selection = {
+    picking, picked, hidden: hiddenIds, restore: (id) => restore([id]), notes, onDelay: setDelayId,
+    toggle: (id) => setPicked((p) => { const n = new Set(p); if (n.has(id)) n.delete(id); else n.add(id); return n; }),
+  };
+  // Completed cases still on screen for the chosen department (whatever the Show filter says).
+  const completedShown = slices.filter((c) => c.status === "Completed" && !hiddenIds.has(c.id) && (dept === "all" || c.department === dept));
 
   const groups = (["overdue", "soon", "later", "done"] as Group[])
     .map((g) => ({ g, rows: visible.filter((c) => groupOf(c, now) === g) }))
@@ -122,12 +214,14 @@ export default function TrackerView({ slices, now, lastPaste, onOpenPaste }: {
   const staleMin = lastPaste ? (now - new Date(lastPaste.at).getTime()) / 60000 : null;
 
   function exportCsv() {
-    const rows = [["R#", "Client", "A-List", "Department", "Pending tests", "Tests done", "TAT", "Status", "Completed (detected)", "Last seen pending"].join(",")];
+    const rows = [["R#", "Client", "A-List", "Department", "Pending tests", "Tests done", "TAT", "Status", "Completed (detected)", "Last seen pending", "Delay reason", "Delay details", "Delayed by (min)", "Delay follow-up"].join(",")];
     (arrange === "dept" ? deptGroups.flatMap((x) => x.rows) : visible).forEach((c) => {
       const pend = c.tests.filter((t) => t.status !== "Completed").map((t) => t.name).join(", ");
       const done = c.tests.filter((t) => t.status === "Completed").map((t) => t.name).join(", ");
       rows.push([c.patientId, csvCell(c.clientDisplay), c.isAlist ? "A-List" : "", c.department, csvCell(pend), csvCell(done),
-        c.reportDate, csvCell(statusText(c, now).text), fmtIso(c.completedAt), fmtIso(c.lastSeen)].join(","));
+        c.reportDate, csvCell(statusText(c, now).text), fmtIso(c.completedAt), fmtIso(c.lastSeen),
+        csvCell(notes[c.id]?.reason_category || ""), csvCell(notes[c.id]?.reason || ""), notes[c.id]?.delay_minutes ?? "",
+        notes[c.id] ? STATUS_LABEL[notes[c.id].status] : ""].join(","));
     });
     downloadFile(`tracker_export_${stamp()}.csv`, rows.join("\n"), "text/csv;charset=utf-8;");
   }
@@ -136,7 +230,8 @@ export default function TrackerView({ slices, now, lastPaste, onOpenPaste }: {
     <div className="max-w-[1400px] mx-auto px-4 sm:px-6 py-5">
       {/* Headline numbers + primary action */}
       <div className="flex items-end justify-between gap-6 flex-wrap mb-5">
-        <div className="flex gap-8 sm:gap-12 flex-wrap">
+        <div className="flex gap-8 sm:gap-12 flex-wrap items-end">
+          <div className="pr-8 sm:pr-12 border-r" style={{ borderColor: C.line }}><DateClock /></div>
           <Stat label="Outstanding" value={open.length} />
           <Stat label="Overdue" value={overdue} color={overdue ? C.danger : C.ink} />
           <Stat label="Due within the hour" value={soon} color={soon ? C.warning : C.ink} />
@@ -155,11 +250,11 @@ export default function TrackerView({ slices, now, lastPaste, onOpenPaste }: {
         <button onClick={() => setDept("all")} aria-pressed={dept === "all"}
           className="px-3 py-1.5 rounded-full text-sm border cursor-pointer"
           style={{ borderColor: dept === "all" ? C.ink : C.line, background: dept === "all" ? C.ink : C.surface, color: dept === "all" ? C.surface : C.ink }}>
-          All departments <span className="num ml-1 opacity-80">{open.length}</span>
+          All departments <span className="num ml-1 opacity-80">{shown.filter((c) => c.status !== "Completed").length}</span>
         </button>
         {depts.map((d) => {
           const on = dept === d;
-          const n = open.filter((c) => c.department === d).length;
+          const n = shown.filter((c) => c.status !== "Completed" && c.department === d).length;
           return (
             <button key={d} onClick={() => setDept(on ? "all" : d)} aria-pressed={on}
               className="flex items-center gap-2 pl-2.5 pr-3 py-1.5 rounded-full text-sm border cursor-pointer"
@@ -199,6 +294,38 @@ export default function TrackerView({ slices, now, lastPaste, onOpenPaste }: {
         <Button tone="quiet" className="ml-auto" onClick={exportCsv}>Export this view (CSV)</Button>
       </div>
 
+      {/* Clear cases from this person's screen */}
+      <div className="flex flex-wrap gap-2 items-center mb-4 text-sm">
+        {!picking ? (
+          <>
+            <Button onClick={() => { setPicking(true); setPicked(new Set()); }}>Select cases to clear</Button>
+            <Button tone="quiet" disabled={!completedShown.length}
+              onClick={() => clearIds(completedShown.map((c) => c.id))}>Clear completed ({completedShown.length})</Button>
+          </>
+        ) : (
+          <>
+            <span className="text-ink-2"><span className="num font-semibold text-ink">{picked.size}</span> selected</span>
+            <Button tone="quiet" onClick={() => setPicked(new Set(visible.filter((c) => !hiddenIds.has(c.id)).map((c) => c.id)))}>Select all shown</Button>
+            <Button tone="primary" disabled={!picked.size} onClick={() => clearIds([...picked])}>Clear selected from my screen</Button>
+            <Button tone="quiet" onClick={() => { setPicking(false); setPicked(new Set()); }}>Cancel</Button>
+          </>
+        )}
+        {hiddenIds.size > 0 && (
+          <label className="flex items-center gap-2 text-ink-2 cursor-pointer px-1 ml-auto">
+            <input type="checkbox" checked={showCleared} onChange={(e) => setShowCleared(e.target.checked)} className="w-4 h-4" />
+            Show cleared <span className="num">({hiddenIds.size})</span>
+          </label>
+        )}
+        {hiddenIds.size > 0 && <Button tone="quiet" onClick={() => restore([...hiddenIds])}>Restore all</Button>}
+      </div>
+      {undo && (
+        <div className="card px-4 py-2.5 mb-4 flex items-center gap-3 flex-wrap text-sm" role="status">
+          <span className="text-ink">Cleared {undo.ids.length} {undo.ids.length === 1 ? "case" : "cases"} from your screen. Nothing was deleted; other staff still see them.</span>
+          <Button tone="quiet" onClick={() => { setCleared(undo.prev); setUndo(null); }}>Undo</Button>
+          <Button tone="quiet" className="ml-auto" onClick={() => setUndo(null)}>Dismiss</Button>
+        </div>
+      )}
+
       {/* Worklist */}
       {!visible.length ? (
         <div className="card p-10 text-center">
@@ -219,7 +346,7 @@ export default function TrackerView({ slices, now, lastPaste, onOpenPaste }: {
                 {alist > 0 && <Badge color={C.alist}>{alist} A-List</Badge>}
               </span>
             </h2>
-            <Worklist rows={rows} now={now} lead="Due" onOpen={setOpenId} accent={DEPT_COLORS[d]} />
+            <Worklist rows={rows} now={now} lead="Due" onOpen={setOpenId} accent={DEPT_COLORS[d]} sel={sel} />
           </section>
         );
       }) : groups.map(({ g, rows }) => (
@@ -227,10 +354,13 @@ export default function TrackerView({ slices, now, lastPaste, onOpenPaste }: {
           <h2 className="flex items-baseline gap-2 mb-2 text-base font-semibold" style={{ color: g === "overdue" ? C.danger : g === "soon" ? C.warning : C.ink }}>
             {GROUP_LABEL[g]} <span className="num text-sm font-normal text-ink-3">{rows.length}</span>
           </h2>
-          <Worklist rows={rows} now={now} lead="Department" onOpen={setOpenId} />
+          <Worklist rows={rows} now={now} lead="Department" onOpen={setOpenId} sel={sel} />
         </section>
       ))}
       <p className="text-xs text-ink-3">Showing {visible.length} of {slices.length} department entries.</p>
+
+      <DelayNoteModal c={delayId ? slices.find((s) => s.id === delayId) || null : null} note={delayId ? notes[delayId] || null : null}
+        now={now} onClose={() => setDelayId(null)} onSaved={(m) => toast?.(m)} />
 
       <CaseDrawer c={selected} siblings={selected ? slices.filter((s) => s.rNumber === selected.rNumber && s.id !== selected.id) : []}
         now={now} onClose={() => setOpenId(null)} onSelect={setOpenId} />
@@ -239,22 +369,61 @@ export default function TrackerView({ slices, now, lastPaste, onOpenPaste }: {
 }
 
 /** The worklist table. `lead` picks the first column: the department, or the due-time group when already split by department. */
-function Worklist({ rows, now, lead, onOpen, accent }: {
-  rows: Slice[]; now: number; lead: "Department" | "Due"; onOpen: (id: string) => void; accent?: string;
+type Selection = {
+  picking: boolean; picked: Set<string>; toggle: (id: string) => void;
+  hidden: Set<string>; restore: (id: string) => void;
+  notes: Record<string, api.DelayNote>; onDelay: (id: string) => void;
+};
+
+/** The delay-reason cell at the end of each row. */
+function DelayCell({ c, now, sel }: { c: Slice; now: number; sel: Selection }) {
+  const n = sel.notes[c.id];
+  if (n) return (
+    <button onClick={() => sel.onDelay(c.id)} className="w-full text-left rounded-md px-2 py-1.5 hover:bg-raised cursor-pointer"
+      title={`${n.reason_category}${n.reason ? `: ${n.reason}` : ""}`}>
+      <span className="block text-xs font-medium text-ink truncate">{n.reason_category}</span>
+      <span className="flex items-center gap-1.5 mt-0.5">
+        <span className="num text-xs text-ink-2">+{delayText(n.delay_minutes)}</span>
+        <DelayStatusBadge s={n.status} />
+      </span>
+    </button>
+  );
+  if (!needsDelayReason(c, now)) return null;
+  return (
+    <button onClick={() => sel.onDelay(c.id)}
+      className="w-full rounded-md px-2 py-1.5 text-xs font-semibold border cursor-pointer hover:bg-raised"
+      style={{ borderColor: C.danger, color: C.danger }}>Add delay reason</button>
+  );
+}
+
+function Worklist({ rows, now, lead, onOpen, accent, sel }: {
+  rows: Slice[]; now: number; lead: "Department" | "Due"; onOpen: (id: string) => void; accent?: string; sel: Selection;
 }) {
   return (
           <div className="card overflow-hidden" style={accent ? { borderTop: `3px solid ${accent}` } : undefined}>
-            <div className="hidden md:grid grid-cols-[9rem_minmax(12rem,1.3fr)_minmax(10rem,2fr)_12rem] gap-4 px-4 py-2 text-xs text-ink-3 border-b" style={{ borderColor: C.line, background: C.raised }}>
-              <span>{lead}</span><span>Requisition</span><span>Tests</span><span>TAT</span>
+            <div className="hidden md:flex border-b" style={{ borderColor: C.line, background: C.raised }}>
+              {sel.picking && <span className="w-10 shrink-0" />}
+              <div className="flex-1 grid grid-cols-[9rem_minmax(12rem,1.3fr)_minmax(10rem,2fr)_12rem] gap-4 px-4 py-2 text-xs text-ink-3">
+                <span>{lead}</span><span>Requisition</span><span>Tests</span><span>TAT</span>
+              </div>
+              <span className="w-44 shrink-0 px-2 py-2 text-xs text-ink-3">Delay reason</span>
             </div>
             {rows.map((c) => {
               const st = statusText(c, now);
               const g = groupOf(c, now);
+              const isCleared = sel.hidden.has(c.id);
               return (
-                <button key={c.id} onClick={() => onOpen(c.id)}
-                  className="w-full text-left grid md:grid-cols-[9rem_minmax(12rem,1.3fr)_minmax(10rem,2fr)_12rem] gap-x-4 gap-y-2 px-4 border-b last:border-b-0 hover:bg-raised cursor-pointer"
-                  style={{ borderColor: C.line, paddingTop: "var(--row-y)", paddingBottom: "var(--row-y)",
-                    boxShadow: g === "overdue" ? `inset 4px 0 0 ${C.danger}` : undefined }}>
+                <div key={c.id} className="flex flex-wrap md:flex-nowrap items-stretch border-b last:border-b-0" style={{ borderColor: C.line,
+                  boxShadow: g === "overdue" ? `inset 4px 0 0 ${C.danger}` : undefined, opacity: isCleared ? 0.6 : undefined }}>
+                {sel.picking && (
+                  <label className="w-10 shrink-0 flex items-center justify-center cursor-pointer hover:bg-raised">
+                    <input type="checkbox" className="w-4 h-4" checked={sel.picked.has(c.id)} disabled={isCleared}
+                      onChange={() => sel.toggle(c.id)} aria-label={`Select ${c.patientId} ${c.department}`} />
+                  </label>
+                )}
+                <button onClick={() => (sel.picking && !isCleared ? sel.toggle(c.id) : onOpen(c.id))}
+                  className="flex-1 min-w-0 text-left grid md:grid-cols-[9rem_minmax(12rem,1.3fr)_minmax(10rem,2fr)_12rem] gap-x-4 gap-y-2 px-4 hover:bg-raised cursor-pointer"
+                  style={{ paddingTop: "var(--row-y)", paddingBottom: "var(--row-y)" }}>
                   {lead === "Department"
                     ? <span className="flex items-center gap-2 text-sm text-ink-2"><Cap dept={c.department} /> {c.department}</span>
                     : <span className="text-sm font-medium self-center" style={{ color: g === "overdue" ? C.danger : g === "soon" ? C.warning : g === "done" ? C.success : C.ink2 }}>{GROUP_LABEL[g]}</span>}
@@ -262,8 +431,15 @@ function Worklist({ rows, now, lead, onOpen, accent }: {
                     <span className="flex items-center gap-2">
                       <span className="num font-semibold text-ink">{c.patientId}</span>
                       {c.isAlist && <Badge color={C.alist}>A-List</Badge>}
+                      {isCleared && <Badge color={C.ink3}>Cleared</Badge>}
                     </span>
                     <span className="block text-sm text-ink-2 break-words">{c.clientDisplay}</span>
+                    <span className="block num text-xs text-ink-3 mt-0.5">
+                      {c.dateAdded && <>Added {shortStamp(c.dateAdded)}</>}
+                      {c.status === "Completed"
+                        ? c.completedAt && <> · Done {shortStamp(c.completedAt)}</>
+                        : c.lastSeen && <> · Last seen {shortStamp(c.lastSeen)}</>}
+                    </span>
                   </span>
                   <span className="self-center"><TestChips tests={c.tests} showDone={c.status === "Completed"} /></span>
                   <span className="self-center min-w-0">
@@ -272,6 +448,13 @@ function Worklist({ rows, now, lead, onOpen, accent }: {
                     <span className="block num text-xs text-ink-3 mt-1">TAT {c.reportDate}</span>
                   </span>
                 </button>
+                <div className="w-full md:w-44 shrink-0 flex flex-col justify-center gap-1 px-2 py-1.5 max-md:pl-4 max-md:pt-0 max-md:empty:hidden">
+                  <DelayCell c={c} now={now} sel={sel} />
+                  {isCleared && (
+                    <button onClick={() => sel.restore(c.id)} className="text-sm text-accent hover:underline underline-offset-2 cursor-pointer">Restore</button>
+                  )}
+                </div>
+                </div>
               );
             })}
           </div>

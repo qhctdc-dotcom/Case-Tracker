@@ -3,6 +3,7 @@ import * as api from "./lib/api";
 import { buildSlices, fmtIso, fmtTime, type Dicts, type Slice } from "./lib/tracker";
 import AuthScreen, { type AuthMode } from "./components/AuthScreen";
 import TrackerView from "./components/TrackerView";
+import DelaysView from "./components/DelaysView";
 import PasteFlow from "./components/PasteFlow";
 import ReportView from "./components/ReportView";
 import SettingsView from "./components/SettingsView";
@@ -18,7 +19,7 @@ import { Button, C, Logo } from "./components/ui";
 import DisplayMenu from "./components/DisplayMenu";
 import { useDisplay } from "./lib/display";
 
-type Tab = "tracker" | "samples" | "deliveries" | "emails" | "report" | "analytics" | "settings" | "staff";
+type Tab = "tracker" | "samples" | "deliveries" | "emails" | "report" | "delays" | "analytics" | "settings" | "staff";
 type Phase = "boot" | "auth" | "app";
 
 function LiveClock() {
@@ -209,7 +210,7 @@ export default function App() {
   const isAdmin = me.role === "admin";
   const lastPaste = snap.pastes[0] || null;
   const initials = (me.display_name || me.email).split(/[\s@.]+/).filter(Boolean).slice(0, 2).map((w) => w[0]!.toUpperCase()).join("");
-  const tabs: [Tab, string][] = [["tracker", "Tracker"], ["samples", "Samples"], ["deliveries", "Deliveries"], ["emails", "Emails"], ["report", "Delay report"], ...(isAdmin ? [["analytics", "Analytics"] as [Tab, string]] : []), ["settings", "Settings"], ...(isAdmin ? [["staff", "Staff"] as [Tab, string]] : [])];
+  const tabs: [Tab, string][] = [["tracker", "Tracker"], ["samples", "Samples"], ["deliveries", "Deliveries"], ["emails", "Emails"], ["report", "Delay report"], ...(isAdmin ? [["delays", "Delays"] as [Tab, string], ["analytics", "Analytics"] as [Tab, string]] : []), ["settings", "Settings"], ...(isAdmin ? [["staff", "Staff"] as [Tab, string]] : [])];
 
   return (
     <div className="min-h-screen bg-canvas">
@@ -267,12 +268,13 @@ export default function App() {
       )}
 
       <main>
-        {tab === "tracker" && <TrackerView slices={slices} now={now} lastPaste={lastPaste} onOpenPaste={() => setPasteOpen(true)} />}
+        {tab === "tracker" && <TrackerView slices={slices} now={now} lastPaste={lastPaste} onOpenPaste={() => setPasteOpen(true)} toast={toast} />}
         {tab === "samples" && <ReceptionView toast={toast} />}
         {tab === "deliveries" && <DeliveriesView toast={toast} />}
         {tab === "emails" && <EmailTrackingView toast={toast} isAdmin={isAdmin} />}
         {tab === "report" && <ReportView slices={slices} pasteTimes={snap.pastes.map((p) => p.at)} dicts={dicts} settings={snap.settings} onError={(m) => toast(m, "err")} />}
         {tab === "settings" && <SettingsView snap={snap} dicts={dicts} slices={slices} isAdmin={isAdmin} refresh={refresh} toast={toast} />}
+        {tab === "delays" && isAdmin && <DelaysView slices={slices} now={now} toast={toast} />}
         {tab === "analytics" && isAdmin && <AnalyticsView slices={slices} pasteTimes={snap.pastes.map((p) => p.at)} dicts={dicts} settings={snap.settings} />}
         {tab === "staff" && isAdmin && <StaffView me={me} />}
       </main>
